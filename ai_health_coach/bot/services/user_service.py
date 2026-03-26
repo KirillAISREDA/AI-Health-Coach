@@ -20,7 +20,7 @@ from bot.models import User, FoodLog, WaterLog, SupplementLog, OnboardingStep
 logger = logging.getLogger(__name__)
 
 
-# ─── Activity multipliers ────────────────────────────────────────────────────
+# --- Activity multipliers ------------------------------------------------
 
 ACTIVITY_MULTIPLIER = {
     "sedentary":   1.2,
@@ -63,7 +63,7 @@ def calculate_tdee(
 
 
 def calculate_water_goal(weight_kg: float) -> float:
-    """30 мл × вес (кг). Тренировки добавляются динамически."""
+    """30 мл x вес (кг). Тренировки добавляются динамически."""
     return round(weight_kg * 30, 0)
 
 
@@ -126,7 +126,7 @@ class UserService:
             "allergies": user.allergies,
         }
 
-    # ── Daily stats ──────────────────────────────────────────────────────────
+    # -- Daily stats -------------------------------------------------------
 
     async def get_today_nutrition(self, session: AsyncSession, user_id: int) -> dict:
         today = date.today()

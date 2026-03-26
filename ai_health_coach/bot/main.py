@@ -19,7 +19,7 @@ from bot.services.database import init_db
 from bot.middlewares.user_context import UserContextMiddleware
 
 # Роутеры (порядок важен: onboarding первым)
-from bot.handlers import onboarding, nutrition, water, supplements, stats, workout, sleep
+from bot.handlers import onboarding, nutrition, water, supplements, stats, workout, sleep, profile, report
 from bot.utils.logger import setup_logging
 
 logging.basicConfig(
@@ -56,6 +56,8 @@ async def main():
     dp.include_router(supplements.router)
     dp.include_router(workout.router)
     dp.include_router(sleep.router)
+    dp.include_router(profile.router)
+    dp.include_router(report.router)
     dp.include_router(stats.router)   # stats последним — содержит fallback handler
 
     # ── Отмена ─────────────────────────────────────────────────────────────

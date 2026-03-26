@@ -1,6 +1,8 @@
 import logging
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardButton
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.services.ai_service import ai_service
@@ -11,7 +13,15 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
-# ─── Статистика ───────────────────────────────────────────────────────────────
+def stats_actions_kb():
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="📄 PDF-отчёт за неделю", callback_data="report:generate"),
+    )
+    return builder.as_markup()
+
+
+# --- Статистика -----------------------------------------------------------
 
 @router.message(F.text == "📊 Статистика")
 async def stats_menu(message: Message, db_user, session: AsyncSession):
@@ -41,47 +51,15 @@ async def stats_menu(message: Message, db_user, session: AsyncSession):
         f"{bar(water_pct)}\n"
         f"{water_ml} / {water_goal:.0f} мл",
         parse_mode="HTML",
+        reply_markup=stats_actions_kb(),
     )
 
 
-# ─── Профиль ─────────────────────────────────────────────────────────────────
-
-@router.message(F.text == "⚙️ Профиль")
-async def profile_menu(message: Message, db_user):
-    goal_labels = {
-        "lose_weight": "Похудение 🔻",
-        "gain_muscle": "Набор массы 💪",
-        "maintain": "Поддержание ⚖️",
-        "recomposition": "Рекомпозиция 🔄",
-    }
-    activity_labels = {
-        "sedentary": "Сидячий",
-        "light": "Низкий",
-        "moderate": "Средний",
-        "active": "Высокий",
-        "very_active": "Очень высокий",
-    }
-
-    await message.answer(
-        f"⚙️ <b>Твой профиль</b>\n\n"
-        f"├ 👤 Пол: <b>{'Мужской' if db_user.gender == 'male' else 'Женский'}</b>\n"
-        f"├ 🎂 Возраст: <b>{db_user.age or '—'} лет</b>\n"
-        f"├ 📏 Рост: <b>{db_user.height_cm or '—'} см</b>\n"
-        f"├ ⚖️ Вес: <b>{db_user.weight_kg or '—'} кг</b>\n"
-        f"├ 🎯 Цель: <b>{goal_labels.get(db_user.goal, '—')}</b>\n"
-        f"├ 🏃 Активность: <b>{activity_labels.get(db_user.activity_level, '—')}</b>\n"
-        f"├ 🔥 TDEE: <b>{int(db_user.tdee_kcal) if db_user.tdee_kcal else '—'} ккал</b>\n"
-        f"└ 💧 Норма воды: <b>{int(db_user.water_goal_ml) if db_user.water_goal_ml else '—'} мл</b>\n\n"
-        f"Чтобы обновить данные — нажми /start",
-        parse_mode="HTML",
-    )
-
-
-# ─── Свободный чат с коучем (fallback handler) ───────────────────────────────
+# --- Свободный чат с коучем (fallback handler) ---------------------------
 
 @router.message(F.text & ~F.text.startswith("/"))
 async def free_chat(message: Message, db_user, session: AsyncSession):
-    """Любое сообщение, не попавшее в другие хэндлеры → идёт к AI-коучу."""
+    """Любое сообщение, не попавшее в другие хэндлеры -> идёт к AI-коучу."""
 
     if not db_user.onboarding_done:
         await message.answer(
