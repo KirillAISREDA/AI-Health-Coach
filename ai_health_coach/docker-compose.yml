@@ -1,0 +1,141 @@
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL ────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: healthcoach_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - healthcoach_net
+
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: healthcoach_redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - healthcoach_net
+
+  # ── Alembic migrations (запускается один раз при старте) ──────────────────
+  migrations:
+    build: .
+    container_name: healthcoach_migrations
+    command: alembic upgrade head
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - healthcoach_net
+    restart: "no"
+
+  # ── Telegram Bot ──────────────────────────────────────────────────────────
+  bot:
+    build: .
+    container_name: healthcoach_bot
+    restart: unless-stopped
+    env_file: .env
+    command: python -m bot.main
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - healthcoach_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Celery Worker ─────────────────────────────────────────────────────────
+  celery_worker:
+    build: .
+    container_name: healthcoach_celery_worker
+    restart: unless-stopped
+    env_file: .env
+    command: celery -A celery_app.tasks worker --loglevel=info --concurrency=4
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - healthcoach_net
+
+  # ── Celery Beat (планировщик) ─────────────────────────────────────────────
+  celery_beat:
+    build: .
+    container_name: healthcoach_celery_beat
+    restart: unless-stopped
+    env_file: .env
+    command: celery -A celery_app.tasks beat --loglevel=info --scheduler celery.beat.PersistentScheduler
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    volumes:
+      - celerybeat_data:/app/celerybeat-schedule
+      - ./logs:/app/logs
+    networks:
+      - healthcoach_net
+
+  # ── Nginx (reverse proxy для webhook в prod) ──────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: healthcoach_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - bot
+    networks:
+      - healthcoach_net
+    profiles:
+      - prod   # только в проде: docker compose --profile prod up
+
+volumes:
+  postgres_data:
+  redis_data:
+  celerybeat_data:
+  nginx_logs:
+
+networks:
+  healthcoach_net:
+    driver: bridge
