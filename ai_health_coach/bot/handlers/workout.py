@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.services.ai_service import ai_service
 from bot.services.user_service import user_service
+from bot.models.workout_log import WorkoutLog
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -245,6 +246,20 @@ async def generate_workout(call: CallbackQuery, db_user, session: AsyncSession, 
             parse_mode="Markdown",
             reply_markup=workout_done_kb(),
         )
+
+        # Сохраняем запись о тренировке
+        wlog = WorkoutLog(
+            user_id=call.from_user.id,
+            feeling=feeling,
+            equipment=equipment,
+            duration_min=duration,
+            injury_zone=injury or None,
+            plan_preview=response[:1000],
+        )
+        session.add(wlog)
+        await session.commit()
+        # Сохраняем workout_log_id в FSM для отметки выполнения
+        await state.update_data(workout_log_id=wlog.id)
     except Exception as e:
         logger.error(f"Workout generation error: {e}")
         await thinking.edit_text("😕 Не удалось составить план. Попробуй снова.")
@@ -255,8 +270,22 @@ async def generate_workout(call: CallbackQuery, db_user, session: AsyncSession, 
 # --- Отметка выполнения --------------------------------------------------
 
 @router.callback_query(F.data.startswith("wt:done:"))
-async def workout_done(call: CallbackQuery, db_user, session: AsyncSession):
+async def workout_done(call: CallbackQuery, db_user, session: AsyncSession, state: FSMContext):
     result = call.data.split(":")[-1]
+
+    # Обновляем лог тренировки
+    fsm_data = await state.get_data()
+    wlog_id  = fsm_data.get("workout_log_id")
+    await state.clear()
+
+    if wlog_id:
+        from sqlalchemy import select as sa_select
+        wlog_res = await session.execute(
+            sa_select(WorkoutLog).where(WorkoutLog.id == wlog_id)
+        )
+        wlog = wlog_res.scalar_one_or_none()
+        if wlog:
+            wlog.completed = result
 
     if result == "full":
         # Добавляем 500 мл воды за тренировку автоматически
@@ -268,6 +297,8 @@ async def workout_done(call: CallbackQuery, db_user, session: AsyncSession):
             log_date=date.today(),
         )
         session.add(water_bonus)
+        if wlog_id and wlog:
+            wlog.water_bonus_ml = 500
         await session.commit()
 
         await call.message.edit_text(
@@ -279,12 +310,14 @@ async def workout_done(call: CallbackQuery, db_user, session: AsyncSession):
             parse_mode="HTML",
         )
     elif result == "partial":
+        await session.commit()
         await call.message.edit_text(
             "⚡ Частичная тренировка тоже считается!\n\n"
             "Главное — стабильность. Завтра добьём 💪",
             parse_mode="HTML",
         )
     else:
+        await session.commit()
         await call.message.edit_text(
             "😌 Ничего страшного. Отдых — часть прогресса.\n\n"
             "Завтра вернёмся к тренировкам! 💪",

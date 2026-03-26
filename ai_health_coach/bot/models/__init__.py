@@ -196,3 +196,5 @@ class Reminder(Base):
     user: Mapped["User"] = relationship(back_populates="reminders")
 
 from bot.models.sleep import SleepLog  # noqa: F401
+
+from bot.models.workout_log import WorkoutLog  # noqa: F401

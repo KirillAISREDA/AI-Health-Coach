@@ -21,7 +21,9 @@ from fastapi import FastAPI, Request, Response
 from bot.config import settings
 from bot.services.database import init_db
 from bot.middlewares.user_context import UserContextMiddleware
-from bot.handlers import onboarding, nutrition, water, supplements, stats, workout, sleep, profile, report
+from bot.middlewares.throttling import ThrottlingMiddleware
+from bot.middlewares.error_handler import ErrorHandlerMiddleware
+from bot.handlers import onboarding, nutrition, water, supplements, stats, workout, sleep, profile, report, reminders, help
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,8 @@ async def lifespan(app: FastAPI):
     dp.include_router(sleep.router)
     dp.include_router(profile.router)
     dp.include_router(report.router)
+    dp.include_router(reminders.router)
+    dp.include_router(help.router)
     dp.include_router(stats.router)
 
     # Cancel handler
