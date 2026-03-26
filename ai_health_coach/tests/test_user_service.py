@@ -18,19 +18,19 @@ class TestTDEE:
 
     def test_male_sedentary_maintain(self):
         # BMR = 10*80 + 6.25*180 - 5*30 + 5 = 800+1125-150+5 = 1780
-        # TDEE = 1780 * 1.2 = 2136, goal=maintain -> +0 = 2136
+        # TDEE = 1780 * 1.2 = 2136, goal=maintain → +0 = 2136
         result = calculate_tdee("male", 30, 180, 80, "sedentary", "maintain")
         assert result == pytest.approx(2136, abs=2)
 
     def test_female_moderate_lose_weight(self):
         # BMR = 10*60 + 6.25*165 - 5*25 - 161 = 600+1031.25-125-161 = 1345.25
-        # TDEE = 1345.25 * 1.55 = 2085.1, goal=lose -> -500 = 1585.1
+        # TDEE = 1345.25 * 1.55 = 2085.1, goal=lose → -500 = 1585.1
         result = calculate_tdee("female", 25, 165, 60, "moderate", "lose_weight")
         assert result == pytest.approx(1585, abs=5)
 
     def test_male_active_gain_muscle(self):
         # BMR = 10*90 + 6.25*185 - 5*28 + 5 = 900+1156.25-140+5 = 1921.25
-        # TDEE = 1921.25 * 1.725 = 3314.2, goal=gain -> +300 = 3614.2
+        # TDEE = 1921.25 * 1.725 = 3314.2, goal=gain → +300 = 3614.2
         result = calculate_tdee("male", 28, 185, 90, "active", "gain_muscle")
         assert result == pytest.approx(3614, abs=5)
 
@@ -50,7 +50,7 @@ class TestTDEE:
         assert result >= 1500, f"Мужской минимум 1500 ккал, получили {result}"
 
     def test_all_activity_levels_increase_tdee(self):
-        """Более высокая активность -> больше калорий."""
+        """Более высокая активность → больше калорий."""
         levels = ["sedentary", "light", "moderate", "active", "very_active"]
         results = [
             calculate_tdee("male", 30, 175, 75, level, "maintain")

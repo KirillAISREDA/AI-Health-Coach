@@ -23,6 +23,7 @@ from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.models.sleep import SleepLog
+from bot.utils.timezone import local_today
 from bot.services.ai_service import ai_service
 from bot.services.user_service import user_service
 
@@ -35,7 +36,7 @@ class SleepFSM(StatesGroup):
     waiting_notes   = State()
 
 
-# --- Клавиатуры ----------------------------------------------------------
+# ─── Клавиатуры ──────────────────────────────────────────────────────────────
 
 def sleep_quality_kb():
     builder = InlineKeyboardBuilder()
@@ -67,7 +68,7 @@ def skip_notes_kb():
     return builder.as_markup()
 
 
-# --- Команда / кнопка ----------------------------------------------------
+# ─── Команда / кнопка ─────────────────────────────────────────────────────────
 
 @router.message(F.text == "😴 Сон")
 @router.message(F.text == "/sleep")
@@ -94,7 +95,7 @@ async def sleep_menu(message: Message, db_user, session: AsyncSession):
         )
 
 
-# --- Шаг 1: оценка качества ---------------------------------------------
+# ─── Шаг 1: оценка качества ──────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("sleep:q:"))
 async def cb_sleep_quality(call: CallbackQuery, state: FSMContext):
@@ -118,7 +119,7 @@ async def cb_sleep_quality(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-# --- Шаг 2: количество часов --------------------------------------------
+# ─── Шаг 2: количество часов ─────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("sleep:h:"))
 async def cb_sleep_hours(call: CallbackQuery, state: FSMContext):
@@ -160,7 +161,7 @@ async def cb_skip_notes(call: CallbackQuery, db_user, session: AsyncSession, sta
     await call.answer()
 
 
-# --- Утренний опрос от Celery (вызывается без FSM) -----------------------
+# ─── Утренний опрос от Celery (вызывается без FSM) ────────────────────────────
 
 async def send_morning_survey(bot, user_id: int, user_name: str):
     """Вызывается из celery task утром."""
@@ -175,12 +176,15 @@ async def send_morning_survey(bot, user_id: int, user_name: str):
         logger.error(f"Morning survey send error for {user_id}: {e}")
 
 
-# --- Helpers --------------------------------------------------------------
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
-async def _get_today_sleep(session: AsyncSession, user_id: int):
+async def _get_today_sleep(session: AsyncSession, user_id: int, today=None):
+    if today is None:
+        from datetime import date
+        today = date.today()
     result = await session.execute(
         select(SleepLog).where(
-            and_(SleepLog.user_id == user_id, SleepLog.log_date == date.today())
+            and_(SleepLog.user_id == user_id, SleepLog.log_date == today)
         )
     )
     return result.scalar_one_or_none()
@@ -191,16 +195,20 @@ async def _save_sleep_log(
     user_id: int,
     fsm_data: dict,
     notes: str = None,
+    today=None,
 ):
+    if today is None:
+        from datetime import date
+        today = date.today()
     # Upsert: удаляем старую запись за сегодня если есть
-    existing = await _get_today_sleep(session, user_id)
+    existing = await _get_today_sleep(session, user_id, today)
     if existing:
         await session.delete(existing)
         await session.flush()
 
     log = SleepLog(
         user_id=user_id,
-        log_date=date.today(),
+        log_date=today,
         sleep_hours=fsm_data.get("sleep_hours"),
         quality_score=fsm_data.get("quality_score"),
         notes=notes,

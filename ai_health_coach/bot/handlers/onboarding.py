@@ -18,17 +18,20 @@ from bot.services.user_service import user_service
 from bot.keyboards.main import (
     gender_kb, goal_kb, activity_kb, skip_kb, main_menu_kb
 )
+from bot.utils.timezone import resolve_city_to_tz, DEFAULT_TZ
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 
 class OnboardingFSM(StatesGroup):
-    waiting_age     = State()
-    waiting_height  = State()
-    waiting_weight  = State()
-    waiting_allergies = State()
-    waiting_timezone = State()
+    waiting_age      = State()
+    waiting_height   = State()
+    waiting_weight   = State()
+    selecting_goal   = State()   # ожидаем выбор цели
+    selecting_activity = State() # ожидаем выбор активности
+    waiting_allergies  = State()
+    waiting_timezone   = State()
 
 
 # ─── /start ──────────────────────────────────────────────────────────────────
@@ -60,7 +63,7 @@ async def cmd_start(message: Message, db_user, session: AsyncSession, state: FSM
 # ─── Пол ─────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("gender:"))
-async def cb_gender(call: CallbackQuery, db_user, session: AsyncSession):
+async def cb_gender(call: CallbackQuery, db_user, session: AsyncSession, state: FSMContext):
     gender = call.data.split(":")[1]
     await user_service.update(session, db_user,
                                gender=gender,
@@ -94,11 +97,6 @@ async def step_age(message: Message, db_user, session: AsyncSession, state: FSMC
         parse_mode="HTML",
     )
 
-
-# Запуск FSM после ввода пола (нет FSM на предыдущих шагах — запускаем здесь)
-@router.callback_query(F.data.startswith("gender:"))
-async def set_fsm_after_gender(call: CallbackQuery, state: FSMContext):
-    await state.set_state(OnboardingFSM.waiting_age)
 
 
 # ─── Рост ─────────────────────────────────────────────────────────────────────
@@ -135,7 +133,7 @@ async def step_weight(message: Message, db_user, session: AsyncSession, state: F
 
     await user_service.update(session, db_user, weight_kg=weight,
                                onboarding_step=OnboardingStep.GOAL.value)
-    await state.clear()
+    await state.set_state(OnboardingFSM.selecting_goal)
     await message.answer(
         "✅ Записал!\n\n<b>Шаг 5/8.</b> Какая у тебя цель?",
         reply_markup=goal_kb(),
@@ -144,11 +142,12 @@ async def step_weight(message: Message, db_user, session: AsyncSession, state: F
 
 # ─── Цель ─────────────────────────────────────────────────────────────────────
 
-@router.callback_query(F.data.startswith("goal:"))
-async def cb_goal(call: CallbackQuery, db_user, session: AsyncSession):
+@router.callback_query(F.data.startswith("goal:"), OnboardingFSM.selecting_goal)
+async def cb_goal(call: CallbackQuery, db_user, session: AsyncSession, state: FSMContext):
     goal = call.data.split(":")[1]
     await user_service.update(session, db_user, goal=goal,
                                onboarding_step=OnboardingStep.ACTIVITY.value)
+    await state.set_state(OnboardingFSM.selecting_activity)
     await call.message.edit_text(
         "✅ Записал!\n\n<b>Шаг 6/8.</b> Уровень физической активности:",
         reply_markup=activity_kb(),
@@ -158,7 +157,7 @@ async def cb_goal(call: CallbackQuery, db_user, session: AsyncSession):
 
 # ─── Активность ───────────────────────────────────────────────────────────────
 
-@router.callback_query(F.data.startswith("activity:"))
+@router.callback_query(F.data.startswith("activity:"), OnboardingFSM.selecting_activity)
 async def cb_activity(call: CallbackQuery, db_user, session: AsyncSession, state: FSMContext):
     activity = call.data.split(":")[1]
     await user_service.update(session, db_user, activity_level=activity,
@@ -201,34 +200,87 @@ async def skip_allergies(call: CallbackQuery, db_user, session: AsyncSession, st
 
 # ─── Часовой пояс ─────────────────────────────────────────────────────────────
 
-CITY_TO_TZ = {
-    "москва": "Europe/Moscow", "спб": "Europe/Moscow", "санкт-петербург": "Europe/Moscow",
-    "киев": "Europe/Kiev", "минск": "Europe/Minsk",
-    "алматы": "Asia/Almaty", "астана": "Asia/Almaty", "нур-султан": "Asia/Almaty",
-    "ташкент": "Asia/Tashkent", "баку": "Asia/Baku", "тбилиси": "Asia/Tbilisi",
-    "берлин": "Europe/Berlin", "вена": "Europe/Vienna", "варшава": "Europe/Warsaw",
-    "лондон": "Europe/London", "нью-йорк": "America/New_York",
-    "dubai": "Asia/Dubai", "дубай": "Asia/Dubai",
-}
-
-
 @router.message(OnboardingFSM.waiting_timezone)
 async def step_timezone(message: Message, db_user, session: AsyncSession, state: FSMContext):
-    city = message.text.strip().lower()
-    tz = CITY_TO_TZ.get(city, "Europe/Moscow")
+    city_input = message.text.strip()
+
+    # Сначала быстрый поиск по словарю
+    tz = resolve_city_to_tz(city_input)
+
+    if not tz:
+        # Не нашли → показываем кнопки с популярными поясами
+        await message.answer(
+            f"🌍 Не смог определить часовой пояс для «{city_input}».
+
+"
+            f"Выбери подходящий UTC-offset:",
+            reply_markup=timezone_fallback_kb(),
+        )
+        return
 
     user = await user_service.complete_onboarding(session, db_user)
     await user_service.update(session, user, timezone=tz)
     await state.clear()
 
+    await message.answer(
+        f"✅ Часовой пояс определён: <b>{tz}</b>\n\n"
+        + _build_onboarding_done_text(user),
+        parse_mode="HTML",
+        reply_markup=main_menu_kb(),
+    )
+
+
+# ─── Fallback клавиатура для часовых поясов ───────────────────────────────────
+
+def timezone_fallback_kb():
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from aiogram.types import InlineKeyboardButton
+    builder = InlineKeyboardBuilder()
+    zones = [
+        ("UTC-5 (Нью-Йорк)",      "America/New_York"),
+        ("UTC+0 (Лондон)",         "Europe/London"),
+        ("UTC+1 (Берлин/Варшава)", "Europe/Berlin"),
+        ("UTC+2 (Киев/Хельсинки)","Europe/Kiev"),
+        ("UTC+3 (Москва)",         "Europe/Moscow"),
+        ("UTC+4 (Дубай)",          "Asia/Dubai"),
+        ("UTC+5:30 (Дели)",        "Asia/Kolkata"),
+        ("UTC+7 (Бангкок)",        "Asia/Bangkok"),
+        ("UTC+8 (Пекин/СГП)",      "Asia/Shanghai"),
+        ("UTC+9 (Токио/Сеул)",     "Asia/Tokyo"),
+        ("UTC+10 (Сидней)",        "Australia/Sydney"),
+        ("UTC+12 (Окленд)",        "Pacific/Auckland"),
+    ]
+    for label, tz_val in zones:
+        builder.row(InlineKeyboardButton(text=label, callback_data=f"tz_pick:{tz_val}"))
+    return builder.as_markup()
+
+
+@router.callback_query(F.data.startswith("tz_pick:"))
+async def cb_tz_pick(call: CallbackQuery, db_user, session: AsyncSession, state: FSMContext):
+    tz = call.data.split("tz_pick:", 1)[1]
+    user = await user_service.complete_onboarding(session, db_user)
+    await user_service.update(session, user, timezone=tz)
+    await state.clear()
+    await call.message.edit_text(
+        f"✅ Часовой пояс: <b>{tz}</b>
+
+"
+        + _build_onboarding_done_text(user),
+        parse_mode="HTML",
+        reply_markup=main_menu_kb(),
+    )
+    await call.answer()
+
+
+
+def _build_onboarding_done_text(user) -> str:
     goal_labels = {
         "lose_weight": "похудение 🔻",
         "gain_muscle": "набор массы 💪",
         "maintain": "поддержание ⚖️",
         "recomposition": "рекомпозиция 🔄",
     }
-
-    await message.answer(
+    return (
         f"🎉 <b>Анкета заполнена!</b>\n\n"
         f"Вот твои параметры:\n"
         f"├ Вес: <b>{user.weight_kg} кг</b>\n"
@@ -236,7 +288,5 @@ async def step_timezone(message: Message, db_user, session: AsyncSession, state:
         f"├ Цель: <b>{goal_labels.get(user.goal, user.goal)}</b>\n"
         f"├ 🔥 Норма калорий: <b>{int(user.tdee_kcal)} ккал/день</b>\n"
         f"└ 💧 Норма воды: <b>{int(user.water_goal_ml)} мл/день</b>\n\n"
-        f"Готов к работе! Выбери, с чего начнём 👇",
-        parse_mode="HTML",
-        reply_markup=main_menu_kb(),
+        f"Готов к работе! Выбери, с чего начнём 👇"
     )

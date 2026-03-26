@@ -228,9 +228,30 @@ class AIService:
         return await self.chat(user_id, prompt, save_context=False)
 
     def _build_system_prompt(self, user_profile: Optional[dict]) -> str:
-        """Добавляет данные профиля к системному промпту."""
+        """Добавляет данные профиля и текущую дату/время к системному промпту."""
+        # Текущая дата и время (UTC — GPT сам учтёт TZ из профиля)
+        from datetime import datetime, timezone as dt_tz
+        import pytz
+        now_utc = datetime.now(dt_tz.utc)
+
+        # Локальное время пользователя если знаем TZ
+        tz_name = (user_profile or {}).get("timezone", "UTC")
+        try:
+            tz = pytz.timezone(tz_name)
+            now_local = now_utc.astimezone(tz)
+            day_names = ["понедельник","вторник","среда","четверг","пятница","суббота","воскресенье"]
+            local_time_info = (
+                f"Текущая дата и время пользователя: "
+                f"{day_names[now_local.weekday()]}, "
+                f"{now_local.strftime('%d.%m.%Y %H:%M')} ({tz_name})"
+            )
+        except Exception:
+            local_time_info = f"Текущая дата UTC: {now_utc.strftime('%d.%m.%Y')}"
+
+        date_block = f"\n\nТЕКУЩЕЕ ВРЕМЯ:\n{local_time_info}"
+
         if not user_profile:
-            return SYSTEM_PROMPT
+            return SYSTEM_PROMPT + date_block
 
         profile_str = (
             f"\n\nДАННЫЕ ПОЛЬЗОВАТЕЛЯ:\n"
@@ -245,7 +266,7 @@ class AIService:
             f"- Аллергии/ограничения: {user_profile.get('allergies', 'нет')}\n"
             f"\nУчитывай эти данные при всех рекомендациях."
         )
-        return SYSTEM_PROMPT + profile_str
+        return SYSTEM_PROMPT + date_block + profile_str
 
 
 ai_service = AIService()

@@ -21,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.services.ai_service import ai_service
 from bot.services.user_service import user_service
+from bot.services.nutrition_parser import save_nutrition_to_log
+from bot.utils.timezone import local_today
 from bot.models import FoodLog
 from bot.keyboards.main import nutrition_menu_kb, cancel_kb, main_menu_kb
 
@@ -143,7 +145,7 @@ async def handle_photo_weight(
         fsm_data = await state.get_data()
         photo_file_id = fsm_data.get("photo_file_id")
 
-        # Сохраняем лог питания (без парсинга КБЖУ из текста — храним как факт)
+        # Сохраняем лог с распарсенным КБЖУ
         food_log = FoodLog(
             user_id=db_user.id,
             raw_input=f"[фото] вес: {weight_g}г",
@@ -151,10 +153,9 @@ async def handle_photo_weight(
             photo_file_id=photo_file_id,
             weight_g=weight_g,
             weight_confirmed=True,
-            meal_date=date.today(),
+            meal_date=local_today(db_user),
         )
-        session.add(food_log)
-        await session.commit()
+        await save_nutrition_to_log(session, food_log, response)
 
         await state.clear()
         await thinking_msg.edit_text(
@@ -193,15 +194,14 @@ async def handle_food_text(
             user_profile=profile,
         )
 
-        # Сохраняем факт записи
+        # Сохраняем факт записи с распарсенным КБЖУ
         food_log = FoodLog(
             user_id=db_user.id,
             raw_input=message.text,
             is_photo=False,
-            meal_date=date.today(),
+            meal_date=local_today(db_user),
         )
-        session.add(food_log)
-        await session.commit()
+        await save_nutrition_to_log(session, food_log, response)
 
         await state.clear()
         await thinking_msg.edit_text(
@@ -219,7 +219,7 @@ async def handle_food_text(
 
 @router.callback_query(F.data == "food:today")
 async def cb_food_today(call: CallbackQuery, db_user, session: AsyncSession):
-    stats = await user_service.get_today_nutrition(session, db_user.id)
+    stats = await user_service.get_today_nutrition(session, db_user.id, local_today(db_user))
     tdee = db_user.tdee_kcal or 2000
 
     cal = stats["calories"]

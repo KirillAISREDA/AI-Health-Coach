@@ -6,6 +6,7 @@ from aiogram.types import Message, CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.models import WaterLog
+from bot.utils.timezone import local_today
 from bot.services.user_service import user_service
 from bot.keyboards.main import water_quick_kb
 
@@ -15,7 +16,7 @@ router = Router()
 
 @router.message(F.text == "💧 Вода")
 async def water_menu(message: Message, db_user, session: AsyncSession):
-    today_ml = await user_service.get_today_water(session, db_user.id)
+    today_ml = await user_service.get_today_water(session, db_user.id, local_today(db_user))
     goal_ml = db_user.water_goal_ml or 2000
     pct = min(100, int(today_ml / goal_ml * 100)) if goal_ml else 0
 
@@ -35,11 +36,11 @@ async def water_menu(message: Message, db_user, session: AsyncSession):
 async def cb_add_water(call: CallbackQuery, db_user, session: AsyncSession):
     amount_ml = int(call.data.split(":")[1])
 
-    log = WaterLog(user_id=db_user.id, amount_ml=amount_ml, log_date=date.today())
+    log = WaterLog(user_id=db_user.id, amount_ml=amount_ml, log_date=local_today(db_user))
     session.add(log)
     await session.commit()
 
-    today_ml = await user_service.get_today_water(session, db_user.id)
+    today_ml = await user_service.get_today_water(session, db_user.id, local_today(db_user))
     goal_ml = db_user.water_goal_ml or 2000
     pct = min(100, int(today_ml / goal_ml * 100))
 
@@ -60,7 +61,7 @@ async def cb_add_water(call: CallbackQuery, db_user, session: AsyncSession):
 
 @router.callback_query(F.data == "water:status")
 async def cb_water_status(call: CallbackQuery, db_user, session: AsyncSession):
-    today_ml = await user_service.get_today_water(session, db_user.id)
+    today_ml = await user_service.get_today_water(session, db_user.id, local_today(db_user))
     goal_ml = db_user.water_goal_ml or 2000
     pct = min(100, int(today_ml / goal_ml * 100)) if goal_ml else 0
 

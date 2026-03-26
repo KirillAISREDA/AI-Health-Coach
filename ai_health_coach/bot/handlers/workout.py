@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.services.ai_service import ai_service
 from bot.services.user_service import user_service
 from bot.models.workout_log import WorkoutLog
+from bot.utils.timezone import local_today
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -34,7 +35,7 @@ class WorkoutFSM(StatesGroup):
     waiting_injury_detail = State()   # уточнение что болит
 
 
-# --- Клавиатуры ----------------------------------------------------------
+# ─── Клавиатуры ──────────────────────────────────────────────────────────────
 
 def wellbeing_kb():
     builder = InlineKeyboardBuilder()
@@ -85,7 +86,7 @@ def workout_done_kb():
     return builder.as_markup()
 
 
-# --- Меню тренировки -----------------------------------------------------
+# ─── Меню тренировки ─────────────────────────────────────────────────────────
 
 @router.message(F.text == "🏋️ Тренировка")
 async def workout_menu(message: Message, db_user, state: FSMContext):
@@ -102,7 +103,7 @@ async def workout_menu(message: Message, db_user, state: FSMContext):
     )
 
 
-# --- Самочувствие --------------------------------------------------------
+# ─── Самочувствие ────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "wt:feel:rest")
 async def feel_rest(call: CallbackQuery, state: FSMContext):
@@ -148,7 +149,7 @@ async def feel_ok(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-# --- Инвентарь -----------------------------------------------------------
+# ─── Инвентарь ───────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("wt:eq:"))
 async def select_equipment(call: CallbackQuery, state: FSMContext):
@@ -161,7 +162,7 @@ async def select_equipment(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-# --- Длительность → генерация плана --------------------------------------
+# ─── Длительность → генерация плана ──────────────────────────────────────────
 
 FEELING_LABELS = {
     "great":   "отличное, полон энергии",
@@ -267,7 +268,7 @@ async def generate_workout(call: CallbackQuery, db_user, session: AsyncSession, 
     await call.answer()
 
 
-# --- Отметка выполнения --------------------------------------------------
+# ─── Отметка выполнения ──────────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("wt:done:"))
 async def workout_done(call: CallbackQuery, db_user, session: AsyncSession, state: FSMContext):
@@ -294,7 +295,7 @@ async def workout_done(call: CallbackQuery, db_user, session: AsyncSession, stat
         water_bonus = WaterLog(
             user_id=db_user.id,
             amount_ml=500,
-            log_date=date.today(),
+            log_date=local_today(db_user),
         )
         session.add(water_bonus)
         if wlog_id and wlog:

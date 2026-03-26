@@ -21,12 +21,12 @@ def stats_actions_kb():
     return builder.as_markup()
 
 
-# --- Статистика -----------------------------------------------------------
+# ─── Статистика ───────────────────────────────────────────────────────────────
 
 @router.message(F.text == "📊 Статистика")
 async def stats_menu(message: Message, db_user, session: AsyncSession):
-    nutrition = await user_service.get_today_nutrition(session, db_user.id)
-    water_ml  = await user_service.get_today_water(session, db_user.id)
+    nutrition = await user_service.get_today_nutrition(session, db_user.id, local_today(db_user))
+    water_ml  = await user_service.get_today_water(session, db_user.id, local_today(db_user))
 
     tdee      = db_user.tdee_kcal or 2000
     water_goal = db_user.water_goal_ml or 2000
@@ -55,11 +55,44 @@ async def stats_menu(message: Message, db_user, session: AsyncSession):
     )
 
 
-# --- Свободный чат с коучем (fallback handler) ---------------------------
+# ─── Профиль ─────────────────────────────────────────────────────────────────
+
+@router.message(F.text == "⚙️ Профиль")
+async def profile_menu(message: Message, db_user):
+    goal_labels = {
+        "lose_weight": "Похудение 🔻",
+        "gain_muscle": "Набор массы 💪",
+        "maintain": "Поддержание ⚖️",
+        "recomposition": "Рекомпозиция 🔄",
+    }
+    activity_labels = {
+        "sedentary": "Сидячий",
+        "light": "Низкий",
+        "moderate": "Средний",
+        "active": "Высокий",
+        "very_active": "Очень высокий",
+    }
+
+    await message.answer(
+        f"⚙️ <b>Твой профиль</b>\n\n"
+        f"├ 👤 Пол: <b>{'Мужской' if db_user.gender == 'male' else 'Женский'}</b>\n"
+        f"├ 🎂 Возраст: <b>{db_user.age or '—'} лет</b>\n"
+        f"├ 📏 Рост: <b>{db_user.height_cm or '—'} см</b>\n"
+        f"├ ⚖️ Вес: <b>{db_user.weight_kg or '—'} кг</b>\n"
+        f"├ 🎯 Цель: <b>{goal_labels.get(db_user.goal, '—')}</b>\n"
+        f"├ 🏃 Активность: <b>{activity_labels.get(db_user.activity_level, '—')}</b>\n"
+        f"├ 🔥 TDEE: <b>{int(db_user.tdee_kcal) if db_user.tdee_kcal else '—'} ккал</b>\n"
+        f"└ 💧 Норма воды: <b>{int(db_user.water_goal_ml) if db_user.water_goal_ml else '—'} мл</b>\n\n"
+        f"Чтобы обновить данные — нажми /start",
+        parse_mode="HTML",
+    )
+
+
+# ─── Свободный чат с коучем (fallback handler) ───────────────────────────────
 
 @router.message(F.text & ~F.text.startswith("/"))
 async def free_chat(message: Message, db_user, session: AsyncSession):
-    """Любое сообщение, не попавшее в другие хэндлеры -> идёт к AI-коучу."""
+    """Любое сообщение, не попавшее в другие хэндлеры → идёт к AI-коучу."""
 
     if not db_user.onboarding_done:
         await message.answer(

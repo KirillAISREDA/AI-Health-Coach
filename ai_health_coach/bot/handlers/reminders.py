@@ -34,7 +34,7 @@ class ReminderFSM(StatesGroup):
     waiting_sleep_time   = State()
 
 
-# --- Клавиатуры ----------------------------------------------------------
+# ─── Клавиатуры ──────────────────────────────────────────────────────────────
 
 def reminders_menu_kb(reminders: list[Reminder]):
     """Главное меню настроек с текущими временами."""
@@ -73,7 +73,7 @@ def sleep_presets_kb():
     return builder.as_markup()
 
 
-# --- Команда /reminders --------------------------------------------------
+# ─── Команда /reminders ──────────────────────────────────────────────────────
 
 @router.message(F.text == "/reminders")
 @router.message(F.text == "🔔 Напоминания")
@@ -88,7 +88,7 @@ async def reminders_menu(message: Message, db_user, session: AsyncSession):
     )
 
 
-# --- Вода ----------------------------------------------------------------
+# ─── Вода ─────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "remind:water")
 async def cb_water_remind(call: CallbackQuery):
@@ -178,7 +178,7 @@ async def cb_water_off(call: CallbackQuery, db_user, session: AsyncSession):
     await call.answer()
 
 
-# --- Сон -----------------------------------------------------------------
+# ─── Сон ──────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "remind:sleep")
 async def cb_sleep_remind(call: CallbackQuery):
@@ -227,7 +227,7 @@ async def cb_sleep_off(call: CallbackQuery, db_user, session: AsyncSession):
     await call.answer()
 
 
-# --- Отключить всё -------------------------------------------------------
+# ─── Отключить всё ────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "remind:disable_all")
 async def cb_disable_all(call: CallbackQuery, db_user, session: AsyncSession):
@@ -241,7 +241,7 @@ async def cb_disable_all(call: CallbackQuery, db_user, session: AsyncSession):
     await call.answer()
 
 
-# --- Helpers --------------------------------------------------------------
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
 async def _get_user_reminders(session: AsyncSession, user_id: int) -> list[Reminder]:
     result = await session.execute(

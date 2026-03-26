@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Лимиты в секундах между запросами
 LIMITS = {
-    "photo":    3.0,   # фото -> GPT Vision
+    "photo":    3.0,   # фото → GPT Vision
     "message":  0.5,   # текстовые сообщения
     "callback": 0.3,   # нажатия кнопок
 }
@@ -33,9 +33,9 @@ WARN_AFTER = 5   # предупредить после N тихих блокир
 class ThrottlingMiddleware(BaseMiddleware):
 
     def __init__(self):
-        # user_id -> {type: last_call_time}
+        # user_id → {type: last_call_time}
         self._last_call: dict[int, dict[str, float]] = defaultdict(dict)
-        # user_id -> счётчик заблокированных подряд
+        # user_id → счётчик заблокированных подряд
         self._blocked_count: dict[int, int] = defaultdict(int)
 
     async def __call__(

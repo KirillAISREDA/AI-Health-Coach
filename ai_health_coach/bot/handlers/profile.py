@@ -33,7 +33,7 @@ class ProfileFSM(StatesGroup):
     waiting_new_timezone  = State()
 
 
-# --- Клавиатура меню профиля ---------------------------------------------
+# ─── Клавиатура меню профиля ─────────────────────────────────────────────────
 
 def profile_menu_kb():
     builder = InlineKeyboardBuilder()
@@ -52,7 +52,7 @@ def profile_menu_kb():
     return builder.as_markup()
 
 
-# --- Главная страница профиля --------------------------------------------
+# ─── Главная страница профиля ────────────────────────────────────────────────
 
 @router.message(F.text == "⚙️ Профиль")
 async def profile_menu(message: Message, db_user):
@@ -87,7 +87,7 @@ async def profile_menu(message: Message, db_user):
     )
 
 
-# --- Обновление веса -----------------------------------------------------
+# ─── Обновление веса ─────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "profile:weight")
 async def cb_update_weight(call: CallbackQuery, state: FSMContext):
@@ -146,7 +146,7 @@ async def step_new_weight(message: Message, db_user, session: AsyncSession, stat
         )
 
 
-# --- Обновление цели -----------------------------------------------------
+# ─── Обновление цели ─────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "profile:goal")
 async def cb_update_goal(call: CallbackQuery):
@@ -195,7 +195,7 @@ async def cb_goal_selected(call: CallbackQuery, db_user, session: AsyncSession):
     await call.answer()
 
 
-# --- Обновление активности -----------------------------------------------
+# ─── Обновление активности ───────────────────────────────────────────────────
 
 @router.callback_query(F.data == "profile:activity")
 async def cb_update_activity(call: CallbackQuery):
@@ -243,7 +243,7 @@ async def cb_activity_selected(call: CallbackQuery, db_user, session: AsyncSessi
     await call.answer()
 
 
-# --- Обновление аллергий -------------------------------------------------
+# ─── Обновление аллергий ─────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "profile:allergies")
 async def cb_update_allergies(call: CallbackQuery, state: FSMContext):
@@ -270,7 +270,7 @@ async def step_new_allergies(message: Message, db_user, session: AsyncSession, s
     )
 
 
-# --- Обновление часового пояса -------------------------------------------
+# ─── Обновление часового пояса ───────────────────────────────────────────────
 
 CITY_TO_TZ = {
     "москва": "Europe/Moscow", "спб": "Europe/Moscow", "санкт-петербург": "Europe/Moscow",
@@ -308,7 +308,7 @@ async def step_new_timezone(message: Message, db_user, session: AsyncSession, st
     )
 
 
-# --- Показатели прогресса ------------------------------------------------
+# ─── Показатели прогресса ────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "profile:stats")
 async def cb_profile_stats(call: CallbackQuery, db_user, session: AsyncSession):

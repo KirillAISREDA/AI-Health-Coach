@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.models import Supplement, SupplementLog
+from bot.utils.timezone import local_today
 from bot.services.ai_service import ai_service
 from bot.services.user_service import user_service
 from bot.keyboards.main import supplements_menu_kb, supplement_taken_kb, cancel_kb
@@ -170,7 +171,7 @@ async def cb_sup_compat(call: CallbackQuery, db_user, session: AsyncSession):
 async def cb_sup_taken(call: CallbackQuery, db_user, session: AsyncSession):
     sup_id = int(call.data.split(":")[1])
     log = SupplementLog(user_id=db_user.id, supplement_id=sup_id,
-                        log_date=date.today(), taken=True)
+                        log_date=local_today(db_user), taken=True)
     session.add(log)
     await session.commit()
     await call.message.edit_text("✅ Записал! Молодец, не забываешь о здоровье 💪")
@@ -181,7 +182,7 @@ async def cb_sup_taken(call: CallbackQuery, db_user, session: AsyncSession):
 async def cb_sup_skip(call: CallbackQuery, db_user, session: AsyncSession):
     sup_id = int(call.data.split(":")[1])
     log = SupplementLog(user_id=db_user.id, supplement_id=sup_id,
-                        log_date=date.today(), taken=False)
+                        log_date=local_today(db_user), taken=False)
     session.add(log)
     await session.commit()
     await call.message.edit_text("⏭️ Пропуск записан.")

@@ -27,7 +27,7 @@ from bot.handlers import onboarding, nutrition, water, supplements, stats, worko
 
 logger = logging.getLogger(__name__)
 
-# -- Глобальные объекты ---------------------------------------------------
+# ── Глобальные объекты ────────────────────────────────────────────────────────
 bot: Bot = None
 dp: Dispatcher = None
 
@@ -47,6 +47,8 @@ async def lifespan(app: FastAPI):
     dp = Dispatcher(storage=storage)
 
     # Middleware
+    dp.update.middleware(ErrorHandlerMiddleware())
+    dp.update.middleware(ThrottlingMiddleware())
     dp.update.middleware(UserContextMiddleware())
 
     # Роутеры

@@ -36,7 +36,7 @@ from bot.models.sleep import SleepLog
 
 logger = logging.getLogger(__name__)
 
-# --- Палитра --------------------------------------------------------------
+# ─── Палитра ─────────────────────────────────────────────────────────────────
 GREEN      = colors.HexColor("#00C896")
 PURPLE     = colors.HexColor("#6C63FF")
 RED_SOFT   = colors.HexColor("#FF6B6B")
@@ -55,7 +55,7 @@ PAGE_W = W - 2 * MARGIN
 DAY_NAMES = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 
-# --- Flowables ------------------------------------------------------------
+# ─── Flowables ────────────────────────────────────────────────────────────────
 
 class ColorBar(Flowable):
     """Горизонтальный прогресс-бар."""
@@ -95,7 +95,7 @@ def page_header(canvas, doc):
     canvas.restoreState()
 
 
-# --- Helpers --------------------------------------------------------------
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def metric_row(label: str, value: str, goal: str, pct: int, color=GREEN) -> list:
     bar = ColorBar(PAGE_W * 0.45, pct, color=color, height=8)
@@ -146,7 +146,7 @@ def small_table(data, col_widths, header_bg=DARK) -> Table:
     return t
 
 
-# --- Основной класс -------------------------------------------------------
+# ─── Основной класс ──────────────────────────────────────────────────────────
 
 class ReportService:
 
@@ -164,7 +164,7 @@ class ReportService:
         week_start = today - timedelta(days=6)
         days = [week_start + timedelta(days=i) for i in range(7)]
 
-        # -- Загружаем данные ------------------------------------------------
+        # ── Загружаем данные ─────────────────────────────────────────────────
         food_by_day  = await self._food_by_day(session, user.id, week_start, today)
         water_by_day = await self._water_by_day(session, user.id, week_start, today)
         sleep_by_day = await self._sleep_by_day(session, user.id, week_start, today)
@@ -173,7 +173,7 @@ class ReportService:
         tdee       = user.tdee_kcal or 2000
         water_goal = user.water_goal_ml or 2000
 
-        # -- Строим PDF ------------------------------------------------------
+        # ── Строим PDF ───────────────────────────────────────────────────────
         buf = io.BytesIO()
         doc = SimpleDocTemplate(
             buf, pagesize=A4,
@@ -195,7 +195,7 @@ class ReportService:
         doc.build(story, onFirstPage=page_header, onLaterPages=page_header)
         return buf.getvalue()
 
-    # --- Секции -----------------------------------------------------------
+    # ─── Секции ──────────────────────────────────────────────────────────────
 
     def _build_cover(self, user: User, week_start: date, today: date) -> list:
         name = user.first_name or "Атлет"
@@ -236,6 +236,7 @@ class ReportService:
     def _build_nutrition_section(self, days, food_by_day, tdee) -> list:
         story = section_header("🥗 Питание по дням")
 
+        # Таблица по дням
         header = ["День", "Дата", "Ккал", "Белки", "Жиры", "Углев.", "% от нормы"]
         rows = [header]
         total_cal = total_prot = total_fat = total_carb = 0
@@ -263,6 +264,7 @@ class ReportService:
                 pct_str,
             ])
 
+        # Итоговая строка
         avg_cal = total_cal / 7
         rows.append([
             "Итого", "7 дней",
@@ -277,6 +279,7 @@ class ReportService:
             PAGE_W*0.09, PAGE_W*0.10, PAGE_W*0.12,
             PAGE_W*0.12, PAGE_W*0.12, PAGE_W*0.12, PAGE_W*0.33,
         ])
+        # Выделяем итоговую строку
         t.setStyle(TableStyle([
             ("BACKGROUND", (0,-1),(-1,-1), CARD_GREEN),
             ("FONTNAME",   (0,-1),(-1,-1), "Helvetica-Bold"),
@@ -284,11 +287,12 @@ class ReportService:
         ]))
         story.append(t)
 
+        # Прогресс-бары среднего
         story.append(Spacer(1, 10))
         avg_pct = int(avg_cal / tdee * 100) if tdee else 0
         story += metric_row("Ккал (среднее/день)", f"{avg_cal:.0f} / {tdee:.0f}",
                              f"{tdee:.0f}", avg_pct, GREEN)
-        protein_goal = tdee * 0.3 / 4
+        protein_goal = tdee * 0.3 / 4  # 30% от TDEE
         prot_avg = total_prot / 7
         prot_pct = int(prot_avg / protein_goal * 100) if protein_goal else 0
         story += metric_row("Белок (среднее/день)", f"{prot_avg:.0f} / {protein_goal:.0f}г",
@@ -422,7 +426,7 @@ class ReportService:
         ))
         return story
 
-    # --- Запросы к БД -----------------------------------------------------
+    # ─── Запросы к БД ────────────────────────────────────────────────────────
 
     async def _food_by_day(self, session, user_id, start, end) -> dict:
         result = await session.execute(

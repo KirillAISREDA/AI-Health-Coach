@@ -20,7 +20,7 @@ from bot.models import User, FoodLog, WaterLog, SupplementLog, OnboardingStep
 logger = logging.getLogger(__name__)
 
 
-# --- Activity multipliers ------------------------------------------------
+# ─── Activity multipliers ────────────────────────────────────────────────────
 
 ACTIVITY_MULTIPLIER = {
     "sedentary":   1.2,
@@ -37,6 +37,12 @@ GOAL_ADJUSTMENT = {
     "recomposition":  -200,   # небольшой дефицит
 }
 
+# Безопасный минимум (ниже нельзя — бот не рекомендует голодовки)
+KCAL_FLOOR = {
+    "male":   1500.0,
+    "female": 1200.0,
+}
+
 
 def calculate_tdee(
     gender: str,
@@ -49,6 +55,7 @@ def calculate_tdee(
     """
     Формула Миффлина-Сан Жеора.
     Возвращает целевое кол-во ккал с учётом цели.
+    Никогда не опускается ниже безопасного минимума.
     """
     if gender == "male":
         bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age + 5
@@ -58,13 +65,16 @@ def calculate_tdee(
     multiplier = ACTIVITY_MULTIPLIER.get(activity_level, 1.2)
     tdee = bmr * multiplier
     adjustment = GOAL_ADJUSTMENT.get(goal, 0)
+    result = tdee + adjustment
 
-    return round(tdee + adjustment, 0)
+    # Клампинг: не ниже безопасного минимума
+    floor = KCAL_FLOOR.get(gender, 1200.0)
+    return round(max(result, floor), 0)
 
 
 def calculate_water_goal(weight_kg: float) -> float:
-    """30 мл x вес (кг). Тренировки добавляются динамически."""
-    return round(weight_kg * 30, 0)
+    """30 мл × вес (кг). Тренировки добавляются динамически."""
+    return round(float(weight_kg) * 30.0, 0)
 
 
 class UserService:
@@ -124,12 +134,14 @@ class UserService:
             "tdee_kcal": user.tdee_kcal,
             "water_goal_ml": user.water_goal_ml,
             "allergies": user.allergies,
+            "timezone": user.timezone,
         }
 
-    # -- Daily stats -------------------------------------------------------
+    # ── Daily stats ──────────────────────────────────────────────────────────
 
-    async def get_today_nutrition(self, session: AsyncSession, user_id: int) -> dict:
-        today = date.today()
+    async def get_today_nutrition(self, session: AsyncSession, user_id: int, today=None) -> dict:
+        if today is None:
+            today = date.today()
         result = await session.execute(
             select(
                 func.coalesce(func.sum(FoodLog.calories), 0).label("calories"),
@@ -144,8 +156,9 @@ class UserService:
         return {"calories": row.calories, "protein": row.protein,
                 "fat": row.fat, "carbs": row.carbs}
 
-    async def get_today_water(self, session: AsyncSession, user_id: int) -> int:
-        today = date.today()
+    async def get_today_water(self, session: AsyncSession, user_id: int, today=None) -> int:
+        if today is None:
+            today = date.today()
         result = await session.execute(
             select(func.coalesce(func.sum(WaterLog.amount_ml), 0)).where(
                 and_(WaterLog.user_id == user_id, WaterLog.log_date == today)
@@ -153,8 +166,10 @@ class UserService:
         )
         return result.scalar()
 
-    async def get_week_stats(self, session: AsyncSession, user_id: int) -> dict:
-        week_ago = date.today() - timedelta(days=7)
+    async def get_week_stats(self, session: AsyncSession, user_id: int, today=None) -> dict:
+        if today is None:
+            today = date.today()
+        week_ago = today - timedelta(days=7)
         nut = await session.execute(
             select(
                 func.coalesce(func.sum(FoodLog.calories), 0),
