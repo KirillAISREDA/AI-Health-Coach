@@ -295,7 +295,9 @@ async def step_timezone(message: Message, db_user, session: AsyncSession, state:
         return
 
     user = await user_service.complete_onboarding(session, db_user)
+    await session.refresh(user)
     await user_service.update(session, user, timezone=tz)
+    await session.refresh(user)
     await state.clear()
 
     await message.answer(
@@ -334,17 +336,23 @@ def timezone_fallback_kb():
 @router.callback_query(F.data.startswith("tz_pick:"))
 async def cb_tz_pick(call: CallbackQuery, db_user, session: AsyncSession, state: FSMContext):
     tz = call.data.split("tz_pick:", 1)[1]
+
+    # ВАЖНО: call.answer() ПЕРВЫМ — чтобы кнопка не зависала при любой ошибке ниже
+    await call.answer()
+
     user = await user_service.complete_onboarding(session, db_user)
+    # refresh нужен чтобы получить актуальный tdee_kcal после complete_onboarding
+    await session.refresh(user)
     await user_service.update(session, user, timezone=tz)
+    await session.refresh(user)
     await state.clear()
+
     await call.message.edit_text(
         f"✅ Часовой пояс: <b>{tz}</b>\n\n"
         + _build_onboarding_done_text(user),
         parse_mode="HTML",
         reply_markup=main_menu_kb(),
     )
-    await call.answer()
-
 
 
 def _build_onboarding_done_text(user) -> str:
@@ -354,13 +362,19 @@ def _build_onboarding_done_text(user) -> str:
         "maintain": "поддержание ⚖️",
         "recomposition": "рекомпозиция 🔄",
     }
+    # Защита от None — если complete_onboarding не отработал корректно
+    tdee   = int(user.tdee_kcal)   if user.tdee_kcal   else "—"
+    water  = int(user.water_goal_ml) if user.water_goal_ml else "—"
+    weight = f"{user.weight_kg} кг" if user.weight_kg else "—"
+    height = f"{user.height_cm} см" if user.height_cm else "—"
+
     return (
         f"🎉 <b>Анкета заполнена!</b>\n\n"
         f"Вот твои параметры:\n"
-        f"├ Вес: <b>{user.weight_kg} кг</b>\n"
-        f"├ Рост: <b>{user.height_cm} см</b>\n"
-        f"├ Цель: <b>{goal_labels.get(user.goal, user.goal)}</b>\n"
-        f"├ 🔥 Норма калорий: <b>{int(user.tdee_kcal)} ккал/день</b>\n"
-        f"└ 💧 Норма воды: <b>{int(user.water_goal_ml)} мл/день</b>\n\n"
+        f"├ Вес: <b>{weight}</b>\n"
+        f"├ Рост: <b>{height}</b>\n"
+        f"├ Цель: <b>{goal_labels.get(user.goal or '', user.goal or '—')}</b>\n"
+        f"├ 🔥 Норма калорий: <b>{tdee} ккал/день</b>\n"
+        f"└ 💧 Норма воды: <b>{water} мл/день</b>\n\n"
         f"Готов к работе! Выбери, с чего начнём 👇"
     )
