@@ -260,9 +260,7 @@ async def cb_tz_pick(call: CallbackQuery, db_user, session: AsyncSession, state:
     await user_service.update(session, user, timezone=tz)
     await state.clear()
     await call.message.edit_text(
-        f"✅ Часовой пояс: <b>{tz}</b>
-
-"
+        f"✅ Часовой пояс: <b>{tz}</b>\n\n"
         + _build_onboarding_done_text(user),
         parse_mode="HTML",
         reply_markup=main_menu_kb(),
