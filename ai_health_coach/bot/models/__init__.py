@@ -198,3 +198,5 @@ class Reminder(Base):
 from bot.models.sleep import SleepLog  # noqa: F401
 
 from bot.models.workout_log import WorkoutLog  # noqa: F401
+
+from bot.models.weight_log import WeightLog  # noqa: F401

@@ -39,6 +39,16 @@ class Settings(BaseSettings):
     context_messages_limit: int = 15
     context_ttl: int = 86400  # 24 hours
 
+    # Telegram IDs через запятую: ADMIN_IDS=123456789,987654321
+    admin_ids: list[int] = []
+
+    @field_validator("admin_ids", mode="before")
+    @classmethod
+    def parse_admin_ids(cls, v):
+        if isinstance(v, str):
+            return [int(x.strip()) for x in v.split(",") if x.strip().isdigit()]
+        return v or []
+
     @property
     def database_url(self) -> str:
         return (
