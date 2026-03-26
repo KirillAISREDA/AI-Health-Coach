@@ -210,9 +210,7 @@ async def step_timezone(message: Message, db_user, session: AsyncSession, state:
     if not tz:
         # Не нашли → показываем кнопки с популярными поясами
         await message.answer(
-            f"🌍 Не смог определить часовой пояс для «{city_input}».
-
-"
+            f"🌍 Не смог определить часовой пояс для «{city_input}».\n\n"
             f"Выбери подходящий UTC-offset:",
             reply_markup=timezone_fallback_kb(),
         )
