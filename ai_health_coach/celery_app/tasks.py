@@ -43,6 +43,11 @@ celery_app.conf.update(
             "task": "celery_app.tasks.send_supplement_reminders",
             "schedule": crontab(minute="*/30"),
         },
+        # Утренние инсайты — каждый час в :30, фильтруем по TZ пользователя
+        "morning-insights": {
+            "task": "celery_app.tasks.send_morning_insights",
+            "schedule": crontab(hour="*", minute=30),
+        },
         # Еженедельный дайджест — воскресенье 09:00 UTC
         "weekly-digest": {
             "task": "celery_app.tasks.send_weekly_digest",
@@ -101,6 +106,67 @@ async def _send_morning_sleep_survey_async():
                 await send_morning_survey(bot, user.id, user.first_name)
             except Exception as e:
                 logger.error(f"Morning survey error for {user.id}: {e}")
+
+    await bot.session.close()
+
+
+@celery_app.task(name="celery_app.tasks.send_morning_insights")
+def send_morning_insights():
+    """Утренние проактивные инсайты — итоги вчера + цели на сегодня."""
+    run_async(_send_morning_insights_async())
+
+
+async def _send_morning_insights_async():
+    from aiogram import Bot
+    from sqlalchemy import select
+    from bot.models import User
+    from bot.services.database import AsyncSessionLocal
+    from bot.services.insight_service import insight_service
+    from bot.utils.timezone import get_user_timezone
+    import pytz
+
+    bot = Bot(token=settings.bot_token)
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(User).where(User.onboarding_done == True)
+        )
+        users = result.scalars().all()
+
+        for user in users:
+            try:
+                # Шлём только в окне 7:00–9:00 по местному времени
+                tz = get_user_timezone(user)
+                local_hour = datetime.now(tz).hour
+                if not (7 <= local_hour <= 9):
+                    continue
+
+                # Не слать повторно — проверяем Redis флаг
+                from bot.services.ai_service import context_store
+                flag_key = f"insight_sent:{user.id}:{date.today().isoformat()}"
+                redis = await context_store._get_redis()
+                already_sent = await redis.get(flag_key)
+                if already_sent:
+                    continue
+
+                stats = await insight_service.get_day_stats(session, user)
+
+                # Для паттернов 3+ дней используем AI, иначе быстрый local build
+                has_pattern = await insight_service._check_3day_pattern(session, user)
+                if has_pattern:
+                    text = await insight_service.build_morning_message_with_ai(
+                        session, user, stats
+                    )
+                else:
+                    text = insight_service.build_morning_message(user, stats)
+
+                await bot.send_message(user.id, text, parse_mode="HTML")
+
+                # Ставим флаг — больше не слать сегодня
+                await redis.setex(flag_key, 86400, "1")
+
+            except Exception as e:
+                logger.error(f"Morning insight error for user {user.id}: {e}")
 
     await bot.session.close()
 

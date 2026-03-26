@@ -75,6 +75,16 @@ async def main():
         await call.message.edit_text("❌ Отменено.")
         await call.answer()
 
+    # ── Команды в меню Telegram ────────────────────────────────────────────
+    from aiogram.types import BotCommand
+    await bot.set_my_commands([
+        BotCommand(command="start",      description="Главное меню"),
+        BotCommand(command="report",     description="PDF-отчёт за неделю"),
+        BotCommand(command="reminders",  description="Настроить напоминания"),
+        BotCommand(command="sleep",      description="Записать сон"),
+        BotCommand(command="help",       description="Справка по командам"),
+    ])
+
     # ── Запуск ────────────────────────────────────────────────────────────
     logger.info("Starting bot in polling mode...")
     await bot.delete_webhook(drop_pending_updates=True)
