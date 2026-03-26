@@ -28,6 +28,11 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     beat_schedule={
+        # Утренний опрос о сне — 8:00 UTC (≈ 11:00 МСК)
+        "morning-sleep-survey": {
+            "task": "celery_app.tasks.send_morning_sleep_survey",
+            "schedule": crontab(hour=8, minute=0),
+        },
         # Напоминания о воде — каждые 2 часа с 8 до 22
         "water-reminders-every-2h": {
             "task": "celery_app.tasks.send_water_reminders",
@@ -54,6 +59,50 @@ def run_async(coro):
         return loop.run_until_complete(coro)
     finally:
         loop.close()
+
+
+@celery_app.task(name="celery_app.tasks.send_morning_sleep_survey")
+def send_morning_sleep_survey():
+    """Утренний опрос о качестве сна."""
+    run_async(_send_morning_sleep_survey_async())
+
+
+async def _send_morning_sleep_survey_async():
+    from aiogram import Bot
+    from sqlalchemy import select
+    from bot.models import User
+    from bot.models.sleep import SleepLog
+    from bot.services.database import AsyncSessionLocal
+    from bot.handlers.sleep import send_morning_survey
+    import pytz
+
+    bot = Bot(token=settings.bot_token)
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(User).where(User.onboarding_done == True)
+        )
+        users = result.scalars().all()
+
+        for user in users:
+            try:
+                tz = pytz.timezone(user.timezone)
+                local_hour = datetime.now(tz).hour
+                if not (7 <= local_hour <= 10):
+                    continue
+                existing = await session.execute(
+                    select(SleepLog).where(
+                        SleepLog.user_id == user.id,
+                        SleepLog.log_date == date.today(),
+                    )
+                )
+                if existing.scalar_one_or_none():
+                    continue
+                await send_morning_survey(bot, user.id, user.first_name)
+            except Exception as e:
+                logger.error(f"Morning survey error for {user.id}: {e}")
+
+    await bot.session.close()
 
 
 @celery_app.task(name="celery_app.tasks.send_water_reminders")

@@ -56,7 +56,9 @@ services:
     container_name: healthcoach_bot
     restart: unless-stopped
     env_file: .env
-    command: python -m bot.main
+    # Polling (dev): python -m bot.main
+    # Webhook (prod): uvicorn bot.webhook:app --host 0.0.0.0 --port 8080
+    command: ${BOT_COMMAND:-python -m bot.main}
     depends_on:
       postgres:
         condition: service_healthy

@@ -194,3 +194,5 @@ class Reminder(Base):
     supplement_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("supplements.id"), nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="reminders")
+
+from bot.models.sleep import SleepLog  # noqa: F401
