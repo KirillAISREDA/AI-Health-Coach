@@ -1,0 +1,63 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:    # ручной запуск из GitHub UI
+
+jobs:
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    # Запускаем только если CI прошёл
+    needs: []           # убери пустой массив и добавь нужный job если хочешь строгий порядок
+
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          script: |
+            set -e
+
+            echo "=== Переходим в директорию проекта ==="
+            cd ${{ secrets.APP_DIR || '/opt/ai_health_coach' }}
+
+            echo "=== Обновляем код ==="
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "=== Обновляем образы ==="
+            docker compose build --no-cache bot celery_worker celery_beat
+
+            echo "=== Применяем миграции ==="
+            docker compose run --rm migrations alembic upgrade head
+
+            echo "=== Перезапускаем сервисы ==="
+            docker compose up -d --no-deps bot celery_worker celery_beat
+
+            echo "=== Проверяем статус ==="
+            sleep 5
+            docker compose ps
+
+            echo "=== Деплой завершён! ==="
+
+      - name: Notify on success
+        if: success()
+        run: |
+          echo "✅ Деплой на продакшн завершён успешно"
+          echo "Commit: ${{ github.sha }}"
+          echo "Branch: ${{ github.ref_name }}"
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Деплой завершился с ошибкой!"
+          echo "Commit: ${{ github.sha }}"
