@@ -3,7 +3,7 @@ SleepLog — запись о качестве сна.
 Добавляется либо через утренний опрос, либо вручную.
 """
 
-from datetime import datetime, date
+from datetime import datetime, timezone, date, timezone
 from typing import Optional
 from sqlalchemy import BigInteger, Integer, Float, DateTime, Date, Text, ForeignKey, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship

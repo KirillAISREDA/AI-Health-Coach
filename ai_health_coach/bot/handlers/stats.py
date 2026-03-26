@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.services.ai_service import ai_service
 from bot.services.user_service import user_service
 from bot.keyboards.main import main_menu_kb
+from bot.utils.timezone import local_today
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -95,9 +96,16 @@ async def free_chat(message: Message, db_user, session: AsyncSession):
     """Любое сообщение, не попавшее в другие хэндлеры → идёт к AI-коучу."""
 
     if not db_user.onboarding_done:
-        await message.answer(
-            "👋 Привет! Сначала давай познакомимся. Нажми /start"
-        )
+        step = db_user.onboarding_step or ""
+        if step and step not in ("start", "gender", "done"):
+            await message.answer(
+                "⬅️ Похоже, ты в процессе заполнения анкеты.\n"
+                "Нажми /start чтобы продолжить с того места."
+            )
+        else:
+            await message.answer(
+                "👋 Привет! Сначала давай познакомимся. Нажми /start"
+            )
         return
 
     thinking = await message.answer("🤔 Думаю...")

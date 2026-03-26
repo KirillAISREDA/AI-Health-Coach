@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
-# -- Фильтр: только admin ------------------------------------------------
+# ── Фильтр: только admin ─────────────────────────────────────────────────────
 
 def is_admin(user_id: int) -> bool:
     admin_ids = getattr(settings, "admin_ids", [])
@@ -36,7 +36,7 @@ class BroadcastFSM(StatesGroup):
     waiting_confirm = State()
 
 
-# -- /admin_stats ---------------------------------------------------------
+# ── /admin_stats ─────────────────────────────────────────────────────────────
 
 @router.message(Command("admin_stats"))
 async def cmd_admin_stats(message: Message, session: AsyncSession):
@@ -78,7 +78,7 @@ async def cmd_admin_stats(message: Message, session: AsyncSession):
     )
 
 
-# -- /admin_user <id> -----------------------------------------------------
+# ── /admin_user <id> ─────────────────────────────────────────────────────────
 
 @router.message(Command("admin_user"))
 async def cmd_admin_user(message: Message, session: AsyncSession):
@@ -120,7 +120,7 @@ async def cmd_admin_user(message: Message, session: AsyncSession):
     )
 
 
-# -- /broadcast -----------------------------------------------------------
+# ── /broadcast ───────────────────────────────────────────────────────────────
 
 @router.message(Command("broadcast"))
 async def cmd_broadcast(message: Message, state: FSMContext):

@@ -1,6 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import PostgresDsn, RedisDsn, field_validator
-from typing import Optional
+from typing import Optional, List
 
 
 class Settings(BaseSettings):
