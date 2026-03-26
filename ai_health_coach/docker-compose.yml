@@ -106,7 +106,6 @@ services:
       migrations:
         condition: service_completed_successfully
     volumes:
-      - celerybeat_data:/app/celerybeat-schedule
       - ./logs:/app/logs
     networks:
       - healthcoach_net
@@ -133,7 +132,6 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  celerybeat_data:
   nginx_logs:
 
 networks:
