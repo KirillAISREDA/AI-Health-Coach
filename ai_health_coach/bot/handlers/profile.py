@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.services.user_service import user_service, calculate_tdee, calculate_water_goal
 from bot.keyboards.main import goal_kb, activity_kb, main_menu_kb
+from bot.utils.timezone import resolve_city_to_tz
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -272,16 +273,7 @@ async def step_new_allergies(message: Message, db_user, session: AsyncSession, s
 
 # ─── Обновление часового пояса ───────────────────────────────────────────────
 
-CITY_TO_TZ = {
-    "москва": "Europe/Moscow", "спб": "Europe/Moscow", "санкт-петербург": "Europe/Moscow",
-    "киев": "Europe/Kiev", "минск": "Europe/Minsk",
-    "алматы": "Asia/Almaty", "астана": "Asia/Almaty",
-    "ташкент": "Asia/Tashkent", "баку": "Asia/Baku", "тбилиси": "Asia/Tbilisi",
-    "берлин": "Europe/Berlin", "вена": "Europe/Vienna", "варшава": "Europe/Warsaw",
-    "лондон": "Europe/London", "нью-йорк": "America/New_York",
-    "дубай": "Asia/Dubai", "dubai": "Asia/Dubai",
-    "прага": "Europe/Prague", "paris": "Europe/Paris", "париж": "Europe/Paris",
-}
+# ─── Обновление часового пояса ───────────────────────────────────────────────
 
 
 @router.callback_query(F.data == "profile:timezone")
@@ -289,7 +281,8 @@ async def cb_update_timezone(call: CallbackQuery, state: FSMContext):
     await state.set_state(ProfileFSM.waiting_new_timezone)
     await call.message.edit_text(
         "🌍 Напиши свой город для определения часового пояса:\n\n"
-        "<i>Москва, Алматы, Берлин, Дубай...</i>",
+        "<i>Москва, Алматы, Берлин, Дубай, Токио, Лондон...</i>\n\n"
+        "Поддерживается 80+ городов.",
         parse_mode="HTML",
     )
     await call.answer()
@@ -297,8 +290,18 @@ async def cb_update_timezone(call: CallbackQuery, state: FSMContext):
 
 @router.message(ProfileFSM.waiting_new_timezone)
 async def step_new_timezone(message: Message, db_user, session: AsyncSession, state: FSMContext):
-    city = message.text.strip().lower()
-    tz = CITY_TO_TZ.get(city, "Europe/Moscow")
+    city_input = message.text.strip()
+    tz = resolve_city_to_tz(city_input)
+
+    if not tz:
+        await message.answer(
+            f"🌍 Не нашёл часовой пояс для «{city_input}».\n\n"
+            f"Попробуй написать по-другому, например:\n"
+            f"<i>Москва, Берлин, Дубай, Токио, Лондон, Нью-Йорк</i>",
+            parse_mode="HTML",
+        )
+        return
+
     await user_service.update(session, db_user, timezone=tz)
     await state.clear()
     await message.answer(

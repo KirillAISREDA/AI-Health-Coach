@@ -49,6 +49,10 @@ async def main():
     dp = Dispatcher(storage=storage)
 
     # ── Middleware ─────────────────────────────────────────────────────────
+    # Порядок важен: ErrorHandler → Throttling → UserContext
+    # ErrorHandler должен быть первым чтобы ловить ошибки из всех последующих
+    dp.update.middleware(ErrorHandlerMiddleware())
+    dp.update.middleware(ThrottlingMiddleware())
     dp.update.middleware(UserContextMiddleware())
 
     # ── Роутеры (порядок важен: onboarding первым) ─────────────────────────

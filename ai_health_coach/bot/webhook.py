@@ -84,7 +84,6 @@ async def lifespan(app: FastAPI):
         secret_token=settings.webhook_secret,
         drop_pending_updates=True,
     )
-    logger.info(f"Webhook set: {webhook_url}")
 
     # Команды в меню Telegram
     from aiogram.types import BotCommand
@@ -95,6 +94,7 @@ async def lifespan(app: FastAPI):
         BotCommand(command="sleep",      description="Записать сон"),
         BotCommand(command="help",       description="Справка по командам"),
     ])
+    logger.info(f"Webhook set: {webhook_url}")
 
     yield
 

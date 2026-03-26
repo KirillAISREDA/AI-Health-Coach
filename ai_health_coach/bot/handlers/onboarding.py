@@ -36,6 +36,18 @@ class OnboardingFSM(StatesGroup):
 
 # ─── /start ──────────────────────────────────────────────────────────────────
 
+# Маппинг onboarding_step → FSM state для восстановления после /start
+STEP_TO_FSM = {
+    OnboardingStep.AGE.value:       "OnboardingFSM:waiting_age",
+    OnboardingStep.HEIGHT.value:    "OnboardingFSM:waiting_height",
+    OnboardingStep.WEIGHT.value:    "OnboardingFSM:waiting_weight",
+    OnboardingStep.GOAL.value:      "OnboardingFSM:selecting_goal",
+    OnboardingStep.ACTIVITY.value:  "OnboardingFSM:selecting_activity",
+    OnboardingStep.ALLERGIES.value: "OnboardingFSM:waiting_allergies",
+    OnboardingStep.TIMEZONE.value:  "OnboardingFSM:waiting_timezone",
+}
+
+
 @router.message(F.text == "/start")
 async def cmd_start(message: Message, db_user, session: AsyncSession, state: FSMContext):
     await state.clear()
@@ -49,6 +61,12 @@ async def cmd_start(message: Message, db_user, session: AsyncSession, state: FSM
         )
         return
 
+    # Восстанавливаем шаг если пользователь уже начал онбординг
+    current_step = db_user.onboarding_step
+    if current_step and current_step != OnboardingStep.START.value             and current_step != OnboardingStep.GENDER.value:
+        await _resume_onboarding(message, db_user, state, current_step)
+        return
+
     await message.answer(
         "👋 Привет! Я — <b>HealthBot</b>, твой персональный AI-коуч.\n\n"
         "Помогу отслеживать питание, тренировки, воду и БАДы.\n\n"
@@ -60,6 +78,65 @@ async def cmd_start(message: Message, db_user, session: AsyncSession, state: FSM
     await user_service.update(session, db_user, onboarding_step=OnboardingStep.GENDER.value)
 
 
+async def _resume_onboarding(
+    message: Message, db_user, state: FSMContext, step: str
+):
+    """Восстанавливает FSM и показывает нужный шаг анкеты."""
+    step_messages = {
+        OnboardingStep.AGE.value: (
+            OnboardingFSM.waiting_age,
+            "⬅️ Ты уже начал анкету! Продолжаем.\n\n"
+            "<b>Шаг 2/8.</b> Сколько тебе лет?\n\nНапиши цифрой, например: <code>28</code>",
+            None,
+        ),
+        OnboardingStep.HEIGHT.value: (
+            OnboardingFSM.waiting_height,
+            "⬅️ Продолжаем!\n\n<b>Шаг 3/8.</b> Твой рост в сантиметрах?\n\n"
+            "Например: <code>178</code>",
+            None,
+        ),
+        OnboardingStep.WEIGHT.value: (
+            OnboardingFSM.waiting_weight,
+            "⬅️ Продолжаем!\n\n<b>Шаг 4/8.</b> Текущий вес в кг?\n\n"
+            "Например: <code>75.5</code>",
+            None,
+        ),
+        OnboardingStep.GOAL.value: (
+            OnboardingFSM.selecting_goal,
+            "⬅️ Продолжаем!\n\n<b>Шаг 5/8.</b> Какая у тебя цель?",
+            goal_kb(),
+        ),
+        OnboardingStep.ACTIVITY.value: (
+            OnboardingFSM.selecting_activity,
+            "⬅️ Продолжаем!\n\n<b>Шаг 6/8.</b> Уровень физической активности:",
+            activity_kb(),
+        ),
+        OnboardingStep.ALLERGIES.value: (
+            OnboardingFSM.waiting_allergies,
+            "⬅️ Продолжаем!\n\n<b>Шаг 7/8.</b> Есть ли аллергии?\n\n"
+            "Перечисли через запятую или нажми «Пропустить».",
+            skip_kb("skip_allergies"),
+        ),
+        OnboardingStep.TIMEZONE.value: (
+            OnboardingFSM.waiting_timezone,
+            "⬅️ Продолжаем!\n\n<b>Шаг 8/8.</b> Напиши свой город:",
+            None,
+        ),
+    }
+
+    if step not in step_messages:
+        # Неизвестный шаг — начинаем сначала
+        await message.answer(
+            "👋 Привет! Укажи свой пол:",
+            reply_markup=gender_kb(),
+        )
+        return
+
+    fsm_state, text, kb = step_messages[step]
+    await state.set_state(fsm_state)
+    await message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
 # ─── Пол ─────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("gender:"))
@@ -68,6 +145,7 @@ async def cb_gender(call: CallbackQuery, db_user, session: AsyncSession, state: 
     await user_service.update(session, db_user,
                                gender=gender,
                                onboarding_step=OnboardingStep.AGE.value)
+    await state.set_state(OnboardingFSM.waiting_age)   # ← КРИТИЧНЫЙ ФИКс
     await call.message.edit_text(
         "✅ Записал!\n\n<b>Шаг 2/8.</b> Сколько тебе лет?\n\n"
         "Напиши цифрой, например: <code>28</code>",
