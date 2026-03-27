@@ -227,6 +227,10 @@ class ReportService:
         tdee       = user.tdee_kcal or 2000
         water_goal = user.water_goal_ml or 2000
 
+        # Фактическое кол-во дней (для новых пользователей)
+        reg_date = user.created_at.date() if hasattr(user.created_at, 'date') else user.created_at
+        actual_days = min(7, max(1, (today - reg_date).days + 1)) if reg_date else 7
+
         # ── Строим PDF ───────────────────────────────────────────────────────
         buf = io.BytesIO()
         doc = SimpleDocTemplate(
@@ -238,8 +242,8 @@ class ReportService:
 
         story = []
         story += self._build_cover(user, week_start, today)
-        story += self._build_nutrition_section(days, food_by_day, tdee)
-        story += self._build_water_section(days, water_by_day, water_goal)
+        story += self._build_nutrition_section(days, food_by_day, tdee, actual_days)
+        story += self._build_water_section(days, water_by_day, water_goal, actual_days)
         story += self._build_sleep_section(days, sleep_by_day)
         if sup_stats:
             story += self._build_supplements_section(sup_stats)
@@ -287,7 +291,7 @@ class ReportService:
         ]))
         return [cover, Spacer(1, 16)]
 
-    def _build_nutrition_section(self, days, food_by_day, tdee) -> list:
+    def _build_nutrition_section(self, days, food_by_day, tdee, actual_days=7) -> list:
         story = section_header("Питание по дням")
 
         # Таблица по дням
@@ -319,9 +323,10 @@ class ReportService:
             ])
 
         # Итоговая строка
-        avg_cal = total_cal / 7
+        avg_cal = total_cal / actual_days
+        days_label = f"{actual_days} дн."
         rows.append([
-            "Итого", "7 дней",
+            "Итого", days_label,
             f"{total_cal:.0f}",
             f"{total_prot:.0f}г",
             f"{total_fat:.0f}г",
@@ -347,13 +352,13 @@ class ReportService:
         story += metric_row("Ккал (среднее/день)", f"{avg_cal:.0f} / {tdee:.0f}",
                              f"{tdee:.0f}", avg_pct, GREEN)
         protein_goal = tdee * 0.3 / 4  # 30% от TDEE
-        prot_avg = total_prot / 7
+        prot_avg = total_prot / actual_days
         prot_pct = int(prot_avg / protein_goal * 100) if protein_goal else 0
         story += metric_row("Белок (среднее/день)", f"{prot_avg:.0f} / {protein_goal:.0f}г",
                              f"{protein_goal:.0f}", prot_pct, PURPLE)
         return story
 
-    def _build_water_section(self, days, water_by_day, water_goal) -> list:
+    def _build_water_section(self, days, water_by_day, water_goal, actual_days=7) -> list:
         story = section_header("Водный баланс", PURPLE)
 
         header = ["День", "Дата", "Выпито (мл)", "Норма (мл)", "Выполнение"]
@@ -373,9 +378,10 @@ class ReportService:
                 f"{status} {pct}%",
             ])
 
-        avg_ml = total / 7
+        avg_ml = total / actual_days
         avg_pct = int(avg_ml / water_goal * 100) if water_goal else 0
-        rows.append(["Среднее", "7 дней", f"{avg_ml:.0f}", f"{int(water_goal)}", f"{avg_pct}% avg"])
+        days_label = f"{actual_days} дн."
+        rows.append(["Среднее", days_label, f"{avg_ml:.0f}", f"{int(water_goal)}", f"{avg_pct}% avg"])
 
         t = small_table(rows, [
             PAGE_W*0.10, PAGE_W*0.10, PAGE_W*0.22, PAGE_W*0.22, PAGE_W*0.36
