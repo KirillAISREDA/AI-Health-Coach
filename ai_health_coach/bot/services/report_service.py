@@ -34,7 +34,61 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.models import User, FoodLog, WaterLog, SupplementLog, Supplement
 from bot.models.sleep import SleepLog
 
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+import os as _os
+
+# ─── Регистрация шрифтов с поддержкой кириллицы ──────────────────────────────
+_FONT_DIRS = [
+    "/usr/share/fonts/truetype/dejavu",
+    "/usr/share/fonts/dejavu",
+    "/Library/Fonts",           # macOS
+    "C:/Windows/Fonts",         # Windows
+]
+
+def _find_font(name: str) -> str | None:
+    for d in _FONT_DIRS:
+        p = _os.path.join(d, name)
+        if _os.path.exists(p):
+            return p
+    return None
+
+_regular = _find_font("DejaVuSans.ttf")
+_bold    = _find_font("DejaVuSans-Bold.ttf")
+_oblique = _find_font("DejaVuSans-Oblique.ttf")
+
+if _regular:
+    pdfmetrics.registerFont(TTFont("DejaVu",          _regular))
+    pdfmetrics.registerFont(TTFont("DejaVu-Bold",     _bold or _regular))
+    pdfmetrics.registerFont(TTFont("DejaVu-Oblique",  _oblique or _regular))
+    _FONT      = "DejaVu"
+    _FONT_BOLD = "DejaVu-Bold"
+    _FONT_ITAL = "DejaVu-Oblique"
+else:
+    # Fallback — если DejaVu не установлен (не должно случаться на Ubuntu)
+    _FONT      = _FONT
+    _FONT_BOLD = _FONT_BOLD
+    _FONT_ITAL = _FONT_ITAL
+
+
+
 logger = logging.getLogger(__name__)
+
+import re as _re
+
+def _strip_emoji(text: str) -> str:
+    """Убирает эмодзи из текста для PDF (DejaVu не поддерживает emoji-диапазоны)."""
+    # Убираем символы вне BMP и основные эмодзи-диапазоны
+    return _re.sub(
+        r"[\U00010000-\U0010FFFF"  # surrogate pairs / emoji
+        r"\U0001F300-\U0001F9FF"   # misc symbols & pictographs  
+        r"\u2600-\u27BF"           # misc symbols
+        r"\u2B00-\u2BFF"           # misc arrows
+        r"\u200d\uFE0F]",          # ZWJ, variation selectors
+        "", text
+    )
+
+
 
 # ─── Палитра ─────────────────────────────────────────────────────────────────
 GREEN      = colors.HexColor("#00C896")
@@ -88,7 +142,7 @@ def page_header(canvas, doc):
     canvas.saveState()
     canvas.setFillColor(GREEN)
     canvas.rect(0, H - 5, W, 5, fill=1, stroke=0)
-    canvas.setFont("Helvetica", 7)
+    canvas.setFont(_FONT, 7)
     canvas.setFillColor(MID)
     canvas.drawString(MARGIN, 14, "AI Health Coach — Персональный отчёт прогресса")
     canvas.drawRightString(W - MARGIN, 14, f"Стр. {doc.page}")
@@ -100,10 +154,10 @@ def page_header(canvas, doc):
 def metric_row(label: str, value: str, goal: str, pct: int, color=GREEN) -> list:
     bar = ColorBar(PAGE_W * 0.45, pct, color=color, height=8)
     row_data = [[
-        Paragraph(label, S("ml", fontSize=9, textColor=MID, fontName="Helvetica")),
-        Paragraph(f"<b>{value}</b>", S("mv", fontSize=9, textColor=DARK, fontName="Helvetica-Bold")),
+        Paragraph(label, S("ml", fontSize=9, textColor=MID, fontName=_FONT)),
+        Paragraph(f"<b>{value}</b>", S("mv", fontSize=9, textColor=DARK, fontName=_FONT_BOLD)),
         bar,
-        Paragraph(f"{pct}%", S("mp", fontSize=9, textColor=color, fontName="Helvetica-Bold",
+        Paragraph(f"{pct}%", S("mp", fontSize=9, textColor=color, fontName=_FONT_BOLD,
                                alignment=TA_RIGHT)),
     ]]
     t = Table(row_data, colWidths=[PAGE_W*0.25, PAGE_W*0.13, PAGE_W*0.50, PAGE_W*0.12])
@@ -121,7 +175,7 @@ def section_header(title: str, color=GREEN) -> list:
     return [
         Spacer(1, 12),
         HRFlowable(width=PAGE_W*0.08, thickness=4, color=color, spaceBefore=0, spaceAfter=4),
-        Paragraph(title, S("sh", fontSize=14, fontName="Helvetica-Bold",
+        Paragraph(_strip_emoji(title), S("sh", fontSize=14, fontName=_FONT_BOLD,
                             textColor=DARK, spaceAfter=4)),
     ]
 
@@ -130,8 +184,8 @@ def small_table(data, col_widths, header_bg=DARK) -> Table:
     style = [
         ("BACKGROUND",    (0,0),(-1,0),  header_bg),
         ("TEXTCOLOR",     (0,0),(-1,0),  WHITE),
-        ("FONTNAME",      (0,0),(-1,0),  "Helvetica-Bold"),
-        ("FONTNAME",      (0,1),(-1,-1), "Helvetica"),
+        ("FONTNAME",      (0,0),(-1,0),  _FONT_BOLD),
+        ("FONTNAME",      (0,1),(-1,-1), _FONT),
         ("FONTSIZE",      (0,0),(-1,-1), 8),
         ("TEXTCOLOR",     (0,1),(-1,-1), MID),
         ("TOPPADDING",    (0,0),(-1,-1), 5),
@@ -209,9 +263,9 @@ class ReportService:
         cover = Table([[
             Paragraph(
                 f"<b>Отчёт прогресса</b><br/>"
-                f"<font color='#00C896'>{name}</font><br/>"
+                f"<font color='#00C896'>{_strip_emoji(name)}</font><br/>"
                 f"<font size='10' color='#718096'>{period}</font>",
-                S("ct", fontSize=22, fontName="Helvetica-Bold", textColor=DARK,
+                S("ct", fontSize=22, fontName=_FONT_BOLD, textColor=DARK,
                   leading=28, spaceAfter=0)
             ),
             Paragraph(
@@ -219,7 +273,7 @@ class ReportService:
                 f"Вес: {user.weight_kg or '—'} кг<br/>"
                 f"TDEE: {int(user.tdee_kcal) if user.tdee_kcal else '—'} ккал<br/>"
                 f"Цель: {goal_labels.get(user.goal, '—')}",
-                S("cp", fontSize=9, fontName="Helvetica", textColor=MID, leading=14)
+                S("cp", fontSize=9, fontName=_FONT, textColor=MID, leading=14)
             ),
         ]], colWidths=[PAGE_W * 0.65, PAGE_W * 0.35])
         cover.setStyle(TableStyle([
@@ -234,7 +288,7 @@ class ReportService:
         return [cover, Spacer(1, 16)]
 
     def _build_nutrition_section(self, days, food_by_day, tdee) -> list:
-        story = section_header("🥗 Питание по дням")
+        story = section_header("Питание по дням")
 
         # Таблица по дням
         header = ["День", "Дата", "Ккал", "Белки", "Жиры", "Углев.", "% от нормы"]
@@ -282,7 +336,7 @@ class ReportService:
         # Выделяем итоговую строку
         t.setStyle(TableStyle([
             ("BACKGROUND", (0,-1),(-1,-1), CARD_GREEN),
-            ("FONTNAME",   (0,-1),(-1,-1), "Helvetica-Bold"),
+            ("FONTNAME",   (0,-1),(-1,-1), _FONT_BOLD),
             ("TEXTCOLOR",  (0,-1),(-1,-1), DARK),
         ]))
         story.append(t)
@@ -300,7 +354,7 @@ class ReportService:
         return story
 
     def _build_water_section(self, days, water_by_day, water_goal) -> list:
-        story = section_header("💧 Водный баланс", PURPLE)
+        story = section_header("Водный баланс", PURPLE)
 
         header = ["День", "Дата", "Выпито (мл)", "Норма (мл)", "Выполнение"]
         rows = [header]
@@ -310,7 +364,7 @@ class ReportService:
             ml = water_by_day.get(d, 0)
             total += ml
             pct = int(ml / water_goal * 100) if water_goal else 0
-            status = "✅" if pct >= 100 else ("⚠️" if pct >= 60 else "❌")
+            status = "OK"  if pct >= 100 else ("~" if pct >= 60 else "!")
             rows.append([
                 DAY_NAMES[d.weekday()],
                 d.strftime("%d.%m"),
@@ -328,7 +382,7 @@ class ReportService:
         ], header_bg=PURPLE)
         t.setStyle(TableStyle([
             ("BACKGROUND", (0,-1),(-1,-1), colors.HexColor("#F0EEFF")),
-            ("FONTNAME",   (0,-1),(-1,-1), "Helvetica-Bold"),
+            ("FONTNAME",   (0,-1),(-1,-1), _FONT_BOLD),
         ]))
         story.append(t)
         story.append(Spacer(1, 8))
@@ -337,14 +391,14 @@ class ReportService:
         return story
 
     def _build_sleep_section(self, days, sleep_by_day) -> list:
-        story = section_header("😴 Сон", YELLOW)
+        story = section_header("Сон", YELLOW)
 
         has_data = any(sleep_by_day.get(d) for d in days)
         if not has_data:
             story.append(Paragraph(
                 "Данные о сне за эту неделю не записаны.\n"
-                "Используй кнопку «😴 Сон» в главном меню.",
-                S("nb", fontSize=9, textColor=MID, fontName="Helvetica-Oblique")
+                "Используй кнопку Сон в главном меню.",
+                S("nb", fontSize=9, textColor=MID, fontName=_FONT_ITAL)
             ))
             return story
 
@@ -355,7 +409,7 @@ class ReportService:
         for d in days:
             log = sleep_by_day.get(d)
             if log:
-                stars = "⭐" * (log.quality_score or 0)
+                stars = f"{log.quality_score}/5" if log.quality_score else "—"
                 rows.append([
                     DAY_NAMES[d.weekday()],
                     d.strftime("%d.%m"),
@@ -380,7 +434,7 @@ class ReportService:
         return story
 
     def _build_supplements_section(self, sup_stats: list) -> list:
-        story = section_header("💊 Приём БАДов", RED_SOFT)
+        story = section_header("Приём БАДов", RED_SOFT)
 
         header = ["БАД", "Доза", "Принято", "Пропущено", "% выполнения"]
         rows = [header]
@@ -403,9 +457,9 @@ class ReportService:
         return story
 
     def _build_ai_comment(self, comment: str) -> list:
-        story = section_header("🤖 Комментарий коуча", GREEN)
+        story = section_header("Комментарий коуча", GREEN)
         box = Table(
-            [[Paragraph(comment, S("ac", fontSize=9, textColor=DARK, fontName="Helvetica",
+            [[Paragraph(_strip_emoji(comment), S("ac", fontSize=9, textColor=DARK, fontName=_FONT,
                                    leading=14, spaceAfter=0))]],
             colWidths=[PAGE_W]
         )
@@ -420,8 +474,8 @@ class ReportService:
         story.append(box)
         story.append(Spacer(1, 10))
         story.append(Paragraph(
-            "⚠️ Информация носит рекомендательный характер. Проконсультируйся с врачом.",
-            S("disc", fontSize=7, textColor=MID, fontName="Helvetica-Oblique",
+            "Информация носит рекомендательный характер. Проконсультируйся с врачом.",
+            S("disc", fontSize=7, textColor=MID, fontName=_FONT_ITAL,
               alignment=TA_CENTER)
         ))
         return story
