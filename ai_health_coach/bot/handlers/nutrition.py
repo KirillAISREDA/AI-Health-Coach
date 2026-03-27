@@ -7,10 +7,16 @@
 
 Флоу текста:
 1. Пользователь пишет что съел → AI парсит, выдаёт КБЖУ → сохраняем.
+
+ФИКСЫ (v2):
+- Умный парсер веса: понимает "итого 240 г", "240", "240г", развёрнутый список с итогом
+- AI-ответ после фото показывается сразу (без подмены шаблоном)
+- Убрано двойное сообщение с запросом веса
 """
 
 import logging
 import io
+import re
 from datetime import date
 
 from aiogram import Router, F, Bot
@@ -35,64 +41,57 @@ class NutritionFSM(StatesGroup):
     waiting_food_text      = State()   # ждём текстовый ввод еды
 
 
+# ─── Утилита: извлечение веса из текста ──────────────────────────────────────
 
-# ─── Хелпер: красивый результат записи еды ───────────────────────────────────
+def _extract_weight_from_text(text: str) -> float | None:
+    """
+    Умный парсер веса порции. Обрабатывает:
+    - Голое число: "240", "350.5"
+    - С единицами: "240г", "240 гр", "240 грамм"
+    - "Итого 240 г", "Всего 350", "= 240"
+    - Развёрнутый список с "Итого NNN гр" в конце
+    - Число с запятой: "350,5"
 
-async def _show_meal_result(
-    msg,
-    session,
-    db_user,
-    raw_text: str,
-    nutrition: dict,
-) -> None:
-    """Показывает результат записи: этот приём + итог за день."""
-    from bot.utils.timezone import local_today
-    from bot.services.user_service import user_service
+    Возвращает float или None если не удалось распознать.
+    """
+    if not text or not text.strip():
+        return None
 
-    if not nutrition:
-        await msg.edit_text(
-            "✅ Записал в дневник!\n\n"
-            "<i>КБЖУ не удалось распознать автоматически.</i>",
-            parse_mode="HTML",
-        )
-        return
+    text = text.strip()
 
-    cal   = nutrition["calories"]
-    prot  = nutrition["protein_g"]
-    fat   = nutrition["fat_g"]
-    carbs = nutrition["carbs_g"]
-    tdee  = db_user.tdee_kcal or 2000
-
-    def fmt(v): return f"{v:.0f}г" if v > 0 else "—"
-
-    # Загружаем свежую статистику за день (уже включает только что сохранённое)
-    today_stats = await user_service.get_today_nutrition(
-        session, db_user.id, local_today(db_user)
+    # 1. Паттерн "итого/всего/общий вес/= ~NNN"
+    match = re.search(
+        r'(?:итого|всего|общий\s*вес|суммарн\w*\s*вес|=)\s*~?\s*(\d+[.,]?\d*)',
+        text,
+        re.IGNORECASE,
     )
-    day_cal  = today_stats["calories"]
-    day_prot = today_stats["protein"]
-    day_fat  = today_stats["fat"]
-    day_carbs = today_stats["carbs"]
-    remaining = max(0, tdee - day_cal)
-    pct = min(100, int(day_cal / tdee * 100)) if tdee else 0
-    bar_f = "█" * (pct // 10)
-    bar_e = "░" * (10 - len(bar_f))
+    if match:
+        return _safe_float(match.group(1))
 
-    await msg.edit_text(
-        f"✅ <b>Записал в дневник!</b>\n\n"
-        f"🍽 <b>Этот приём:</b>\n"
-        f"  🔥 {cal:.0f} ккал  "
-        f"🥩 {fmt(prot)}  "
-        f"🧈 {fmt(fat)}  "
-        f"🍞 {fmt(carbs)}\n\n"
-        f"📊 <b>Итого за сегодня:</b>\n"
-        f"[{bar_f}{bar_e}] {pct}%\n"
-        f"{day_cal:.0f} / {tdee:.0f} ккал"
-        + (f"  <i>(осталось {remaining:.0f})</i>" if remaining > 0 else " ✅")
-        + f"\n🥩 {fmt(day_prot)}  🧈 {fmt(day_fat)}  🍞 {fmt(day_carbs)}\n\n"
-        "<i>Данные носят рекомендательный характер. Проконсультируйся с врачом.</i>",
-        parse_mode="HTML",
-    )
+    # 2. Если текст — просто число (возможно с "г"/"гр"/"грамм")
+    clean = re.sub(r'\s*(г|гр|грамм|грамов|gram[s]?)\s*$', '', text, flags=re.IGNORECASE).strip()
+    clean = clean.replace(",", ".").strip()
+    try:
+        val = float(clean)
+        return val
+    except ValueError:
+        pass
+
+    # 3. Если текст длинный (список продуктов) — ищем последнее число
+    #    Приоритет: числа рядом со словами "итого"/"всего"
+    numbers = re.findall(r'(\d+[.,]?\d*)', text)
+    if numbers:
+        # Берём последнее число — обычно это итог
+        return _safe_float(numbers[-1])
+
+    return None
+
+
+def _safe_float(s: str) -> float | None:
+    try:
+        return float(s.replace(",", "."))
+    except (ValueError, TypeError):
+        return None
 
 
 # ─── Меню питания ────────────────────────────────────────────────────────────
@@ -101,10 +100,7 @@ async def _show_meal_result(
 async def nutrition_menu(message: Message):
     await message.answer(
         "🥗 <b>Модуль питания</b>\n\n"
-        "📸 <b>Фото блюда</b> — просто прикрепи фото через скрепку 📎 или камеру внизу экрана. "
-        "Я автоматически распознаю состав и посчитаю КБЖУ.\n\n"
-        "✏️ <b>Текстом</b> — напиши что съел в свободной форме:\n"
-        "<i>«гречка с котлетой, 300г» или «съел пиццу маргарита»</i>",
+        "Сфотографируй блюдо или опиши текстом — я посчитаю КБЖУ.",
         parse_mode="HTML",
         reply_markup=nutrition_menu_kb(),
     )
@@ -142,9 +138,6 @@ async def handle_food_photo(
     # Берём фото наилучшего качества
     photo: PhotoSize = message.photo[-1]
 
-    # Если к фото приложен текст — используем как подсказку для AI
-    caption = message.caption.strip() if message.caption else None
-
     thinking_msg = await message.answer("📸 Анализирую фото...")
 
     try:
@@ -159,18 +152,17 @@ async def handle_food_photo(
             user_id=message.from_user.id,
             photo_bytes=photo_bytes,
             user_profile=profile,
-            caption=caption,       # передаём описание пользователя
         )
 
-        # Если в caption уже указан вес/состав — пробуем сразу считать КБЖУ
-        # Иначе спрашиваем вес
+        # Сохраняем file_id для записи в БД после получения веса
         await state.update_data(
             photo_file_id=photo.file_id,
-            photo_caption=caption or "",
             step="waiting_weight",
         )
         await state.set_state(NutritionFSM.waiting_photo_weight)
 
+        # ⚠️ ВАЖНО: показываем именно ответ AI (распознанные продукты + вопрос про вес).
+        # НЕ подменяем на шаблонный текст "Введи общий вес порции..."!
         await thinking_msg.edit_text(response, parse_mode="Markdown")
 
     except Exception as e:
@@ -180,6 +172,8 @@ async def handle_food_photo(
         )
 
 
+# ─── Шаг 2: пользователь ввёл вес порции → считаем КБЖУ ─────────────────────
+
 @router.message(NutritionFSM.waiting_photo_weight)
 async def handle_photo_weight(
     message: Message,
@@ -187,22 +181,30 @@ async def handle_photo_weight(
     session: AsyncSession,
     state: FSMContext,
 ):
-    """Шаг 2: пользователь ввёл вес порции → считаем КБЖУ."""
+    """
+    Шаг 2: пользователь ввёл вес порции → считаем КБЖУ.
 
-    # Валидируем вес
-    try:
-        weight_g = float(message.text.strip().replace(",", ".").replace("г", "").strip())
-        assert 10 <= weight_g <= 3000
-    except (ValueError, AssertionError):
+    ФИКС: Умный парсер — понимает:
+    - "240"
+    - "240г"
+    - Развёрнутый список типа:
+        "1. Куриная котлета - 100гр
+         2. Морская капуста - 80гр
+         Итого 240 гр"
+    """
+
+    weight_g = _extract_weight_from_text(message.text)
+
+    # Валидация диапазона
+    if weight_g is None or not (10 <= weight_g <= 5000):
         await message.answer(
-            "⚖️ Введи <b>общий вес порции</b> в граммах.\n\n"
-            "Если на фото несколько блюд — введи суммарный вес всего что ешь, например: <code>350</code>\n"
-            "(рис ~150г + курица ~150г + кофе ~50г = ~350г)",
+            "⚖️ Не смог распознать вес порции.\n"
+            "Введи одно число в граммах, например: <code>240</code>",
             parse_mode="HTML",
         )
         return
 
-    thinking_msg = await message.answer(f"⚙️ Считаю КБЖУ для {weight_g:.0f}г...")
+    thinking_msg = await message.answer("⚙️ Считаю КБЖУ...")
 
     try:
         profile = user_service.to_profile_dict(db_user)
@@ -219,7 +221,7 @@ async def handle_photo_weight(
         # Сохраняем лог с распарсенным КБЖУ
         food_log = FoodLog(
             user_id=db_user.id,
-            raw_input=f"[фото] {fsm_data.get('photo_caption', '') or ''} вес: {weight_g}г".strip(),
+            raw_input=f"[фото] вес: {weight_g:.0f}г",
             is_photo=True,
             photo_file_id=photo_file_id,
             weight_g=weight_g,
@@ -229,41 +231,10 @@ async def handle_photo_weight(
         await save_nutrition_to_log(session, food_log, response)
 
         await state.clear()
-
-        # Строим красивый HTML — без повтора описания блюд
-        from bot.services.nutrition_parser import parse_nutrition_from_text
-        nutrition = parse_nutrition_from_text(response)
-
-        if nutrition and nutrition.get("calories", 0) > 0:
-            cal   = nutrition["calories"]
-            prot  = nutrition["protein_g"]
-            fat   = nutrition["fat_g"]
-            carbs = nutrition["carbs_g"]
-            tdee  = db_user.tdee_kcal or 2000
-
-            today_stats = await user_service.get_today_nutrition(session, db_user.id, local_today(db_user))
-            day_cal   = today_stats["calories"]
-            remaining = max(0, tdee - day_cal)
-            pct = min(100, int(day_cal / tdee * 100)) if tdee else 0
-            bar_f = "█" * (pct // 10); bar_e = "░" * (10 - len(bar_f))
-            def fmt(v): return f"{v:.0f}г" if v > 0 else "—"
-
-            await thinking_msg.edit_text(
-                f"✅ <b>Записал в дневник!</b>\n\n"
-                f"🥗 <b>Этот приём ({weight_g:.0f}г):</b> {cal:.0f} ккал  "
-                f"🥩{fmt(prot)}  🧈{fmt(fat)}  🍞{fmt(carbs)}\n\n"
-                f"📊 <b>Итого за сегодня:</b>\n"
-                f"[{bar_f}{bar_e}] {pct}%\n"
-                f"{day_cal:.0f} / {tdee:.0f} ккал"
-                + (f"  <i>(осталось {remaining:.0f})</i>" if remaining > 0 else " ✅") + "\n\n"
-                f"<i>Данные носят рекомендательный характер.</i>",
-                parse_mode="HTML",
-            )
-        else:
-            await thinking_msg.edit_text(
-                response + "\n\n✅ <i>Записал в дневник!</i>",
-                parse_mode="HTML",
-            )
+        await thinking_msg.edit_text(
+            response + "\n\n✅ <i>Записал в дневник!</i>",
+            parse_mode="HTML",
+        )
 
     except Exception as e:
         logger.error(f"Nutrition calc error: {e}")
@@ -306,41 +277,10 @@ async def handle_food_text(
         await save_nutrition_to_log(session, food_log, response)
 
         await state.clear()
-
-        # Красивый HTML-ответ — без сырой таблицы GPT
-        from bot.services.nutrition_parser import parse_nutrition_from_text
-        nutrition = parse_nutrition_from_text(response)
-
-        if nutrition and nutrition.get("calories", 0) > 0:
-            cal   = nutrition["calories"]
-            prot  = nutrition["protein_g"]
-            fat   = nutrition["fat_g"]
-            carbs = nutrition["carbs_g"]
-            tdee  = db_user.tdee_kcal or 2000
-
-            today_stats = await user_service.get_today_nutrition(session, db_user.id, local_today(db_user))
-            day_cal   = today_stats["calories"]
-            remaining = max(0, tdee - day_cal)
-            pct = min(100, int(day_cal / tdee * 100)) if tdee else 0
-            bar_f = "█" * (pct // 10); bar_e = "░" * (10 - len(bar_f))
-            def fmt(v): return f"{v:.0f}г" if v > 0 else "—"
-
-            await thinking_msg.edit_text(
-                f"✅ <b>Записал в дневник!</b>\n\n"
-                f"🥗 <b>Этот приём:</b> {cal:.0f} ккал  "
-                f"🥩{fmt(prot)}  🧈{fmt(fat)}  🍞{fmt(carbs)}\n\n"
-                f"📊 <b>Итого за сегодня:</b>\n"
-                f"[{bar_f}{bar_e}] {pct}%\n"
-                f"{day_cal:.0f} / {tdee:.0f} ккал"
-                + (f"  <i>(осталось {remaining:.0f})</i>" if remaining > 0 else " ✅") + "\n\n"
-                f"<i>Данные носят рекомендательный характер.</i>",
-                parse_mode="HTML",
-            )
-        else:
-            await thinking_msg.edit_text(
-                response + "\n\n✅ <i>Записал в дневник!</i>",
-                parse_mode="HTML",
-            )
+        await thinking_msg.edit_text(
+            response + "\n\n✅ <i>Записал в дневник!</i>",
+            parse_mode="HTML",
+        )
 
     except Exception as e:
         logger.error(f"Food text error: {e}")
