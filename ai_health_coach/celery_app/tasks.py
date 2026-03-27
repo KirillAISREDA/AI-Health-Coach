@@ -326,12 +326,15 @@ async def _send_weekly_digest_async():
 
         for user in users:
             try:
-                week_stats = await user_service.get_week_stats(session, user.id)
+                week_stats = await user_service.get_week_stats(
+                    session, user.id, created_at=user.created_at
+                )
                 profile = user_service.to_profile_dict(user)
+                actual_days = week_stats["days"]
 
                 # Обогащаем статистику целями
-                week_stats["protein_goal_g"] = (profile.get("tdee_kcal", 2000) * 0.3) / 4 * 7
-                week_stats["water_goal_ml_total"] = (profile.get("water_goal_ml", 2000)) * 7
+                week_stats["protein_goal_g"] = (profile.get("tdee_kcal", 2000) * 0.3) / 4 * actual_days
+                week_stats["water_goal_ml_total"] = (profile.get("water_goal_ml", 2000)) * actual_days
 
                 digest = await ai_service.generate_weekly_digest(
                     user_id=user.id,

@@ -100,11 +100,34 @@ class TestUserServiceDB:
     @pytest.mark.asyncio
     async def test_get_week_stats_spans_7_days(self, session, db_user, food_logs_week, water_logs_week):
         today = date.today()
-        result = await user_service.get_week_stats(session, db_user.id, today)
-        # Должны суммироваться данные за 7 дней
+        result = await user_service.get_week_stats(
+            session, db_user.id, today, created_at=db_user.created_at
+        )
         assert result["total_calories"] > 0
         assert result["total_water_ml"] > 0
-        assert result["days"] == 7
+        assert 1 <= result["days"] <= 7
+
+    @pytest.mark.asyncio
+    async def test_get_week_stats_new_user_1_day(self, session, db_user):
+        """Новый пользователь — среднее за 1 день, а не за 7."""
+        from datetime import datetime
+        today = date.today()
+        created_at = datetime.combine(today, datetime.min.time())
+
+        session.add(FoodLog(
+            user_id=db_user.id, raw_input="test",
+            meal_date=today, calories=2000, protein_g=100,
+            fat_g=50, carbs_g=200,
+        ))
+        session.add(WaterLog(user_id=db_user.id, log_date=today, amount_ml=1500))
+        await session.commit()
+
+        result = await user_service.get_week_stats(
+            session, db_user.id, today, created_at=created_at
+        )
+        assert result["days"] == 1
+        assert result["total_calories"] == pytest.approx(2000, abs=1)
+        assert result["total_water_ml"] == 1500
 
     @pytest.mark.asyncio
     async def test_to_profile_dict_includes_timezone(self, session, db_user):

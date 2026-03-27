@@ -315,12 +315,15 @@ async def step_new_timezone(message: Message, db_user, session: AsyncSession, st
 
 @router.callback_query(F.data == "profile:stats")
 async def cb_profile_stats(call: CallbackQuery, db_user, session: AsyncSession):
-    week_stats = await user_service.get_week_stats(session, db_user.id)
+    week_stats = await user_service.get_week_stats(
+        session, db_user.id, created_at=db_user.created_at
+    )
     tdee = db_user.tdee_kcal or 2000
     water_goal = db_user.water_goal_ml or 2000
 
-    cal_avg   = week_stats["total_calories"] / 7
-    water_avg = week_stats["total_water_ml"] / 7
+    days = week_stats["days"]
+    cal_avg   = week_stats["total_calories"] / days
+    water_avg = week_stats["total_water_ml"] / days
 
     cal_pct   = min(100, int(cal_avg / tdee * 100)) if tdee else 0
     water_pct = min(100, int(water_avg / water_goal * 100)) if water_goal else 0
@@ -330,8 +333,10 @@ async def cb_profile_stats(call: CallbackQuery, db_user, session: AsyncSession):
         empty  = "░" * (10 - len(filled))
         return f"[{filled}{empty}] {pct}%"
 
+    days_label = f"{days} {'день' if days == 1 else 'дня' if days < 5 else 'дней'}"
+
     await call.message.edit_text(
-        f"📈 <b>Средние показатели за 7 дней</b>\n\n"
+        f"📈 <b>Средние показатели за {days_label}</b>\n\n"
         f"🔥 Калории (avg/день):\n"
         f"{bar(cal_pct)}\n"
         f"{cal_avg:.0f} / {tdee:.0f} ккал\n\n"

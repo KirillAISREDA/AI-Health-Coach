@@ -166,10 +166,24 @@ class UserService:
         )
         return result.scalar()
 
-    async def get_week_stats(self, session: AsyncSession, user_id: int, today=None) -> dict:
+    async def get_week_stats(
+        self,
+        session: AsyncSession,
+        user_id: int,
+        today=None,
+        created_at=None,
+    ) -> dict:
         if today is None:
             today = date.today()
         week_ago = today - timedelta(days=7)
+
+        # Фактическое кол-во дней = min(7, дней с момента регистрации)
+        if created_at is not None:
+            reg_date = created_at.date() if hasattr(created_at, 'date') else created_at
+            actual_days = min(7, max(1, (today - reg_date).days + 1))
+        else:
+            actual_days = 7  # fallback для обратной совместимости
+
         nut = await session.execute(
             select(
                 func.coalesce(func.sum(FoodLog.calories), 0),
@@ -188,7 +202,7 @@ class UserService:
             "total_calories": row[0],
             "total_protein_g": row[1],
             "total_water_ml": water.scalar(),
-            "days": 7,
+            "days": actual_days,
         }
 
 
