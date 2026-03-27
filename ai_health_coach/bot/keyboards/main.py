@@ -114,8 +114,7 @@ def supplements_menu_kb() -> InlineKeyboardMarkup:
 def nutrition_menu_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="📸 Сфотографировать блюдо", callback_data="food:photo"),
-        InlineKeyboardButton(text="✏️ Записать текстом", callback_data="food:text"),
+        InlineKeyboardButton(text="✏️ Записать текстом",   callback_data="food:text"),
     )
     builder.row(
         InlineKeyboardButton(text="📊 Дневник за сегодня", callback_data="food:today"),
