@@ -53,14 +53,30 @@ def parse_nutrition_from_text(text: str) -> dict:
         r"\s*([\d.,~≈]+)\s*\|"                                 # углеводы
     )
 
-    rows = table_row.findall(clean)
+    # Ищем строки таблицы markdown вместе с именем блюда
+    table_row_full = re.compile(
+        r"\|\s*([^|]+?)\s*\|\s*[\d.,~≈]+\s*(?:г|g|мл|ml)?\s*\|"  # блюдо | вес[ед] |
+        r"\s*([\d.,~≈]+)\s*\|"                                       # ккал
+        r"\s*([\d.,~≈]+)\s*\|"                                       # белки
+        r"\s*([\d.,~≈]+)\s*\|"                                       # жиры
+        r"\s*([\d.,~≈]+)\s*\|"                                       # углеводы
+    )
+
+    rows = table_row_full.findall(clean)
     if rows:
-        for kcal, prot, f, carb in rows:
+        for dish, kcal, prot, f, carb in rows:
+            dish_lower = dish.strip().lower()
+            # Пропускаем итоговые строки
+            is_summary = any(w in dish_lower for w in [
+                "итого", "итог", "total", "всего", "среднее", "average", "sum"
+            ])
+            if is_summary:
+                continue
             v_kcal = _to_float(kcal)
             v_prot = _to_float(prot)
             v_fat  = _to_float(f)
             v_carb = _to_float(carb)
-            if v_kcal and v_kcal > 5:  # пропускаем заголовок и нулевые строки
+            if v_kcal and v_kcal > 5:
                 calories += v_kcal
                 protein  += v_prot or 0
                 fat      += v_fat  or 0

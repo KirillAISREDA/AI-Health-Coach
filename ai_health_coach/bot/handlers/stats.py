@@ -129,7 +129,52 @@ async def free_chat(message: Message, db_user, session: AsyncSession):
             user_message=message.text,
             user_profile=profile,
         )
-        await thinking.edit_text(response, parse_mode="Markdown")
+
+        # Автосохранение: если GPT вернул таблицу КБЖУ — записываем в дневник
+        from bot.services.nutrition_parser import parse_nutrition_from_text, save_nutrition_to_log
+        from bot.models import FoodLog
+        from bot.utils.timezone import local_today
+        nutrition = parse_nutrition_from_text(response)
+
+        if nutrition and nutrition.get("calories", 0) > 0:
+            food_log = FoodLog(
+                user_id=db_user.id,
+                raw_input=message.text[:500],
+                is_photo=False,
+                meal_date=local_today(db_user),
+            )
+            await save_nutrition_to_log(session, food_log, response)
+
+            # Строим красивый HTML вместо markdown-таблицы
+            cal   = nutrition["calories"]
+            prot  = nutrition["protein_g"]
+            fat   = nutrition["fat_g"]
+            carbs = nutrition["carbs_g"]
+            tdee  = db_user.tdee_kcal or 2000
+
+            # Считаем итоговую статистику за день
+            today_stats = await user_service.get_today_nutrition(session, db_user.id, local_today(db_user))
+            day_cal = today_stats["calories"]
+            remaining = max(0, tdee - day_cal)
+            pct = min(100, int(day_cal / tdee * 100)) if tdee else 0
+            bar_f = "█" * (pct // 10); bar_e = "░" * (10 - len(bar_f))
+
+            def fmt(v): return f"{v:.0f}г" if v > 0 else "—"
+
+            await thinking.edit_text(
+                f"✅ <b>Записал в дневник!</b>\n\n"
+                f"🥗 <b>Этот приём:</b> {cal:.0f} ккал  "
+                f"🥩{fmt(prot)}  🧈{fmt(fat)}  🍞{fmt(carbs)}\n\n"
+                f"📊 <b>Итого за сегодня:</b>\n"
+                f"[{bar_f}{bar_e}] {pct}%\n"
+                f"{day_cal:.0f} / {tdee:.0f} ккал"
+                + (f"  <i>(осталось {remaining:.0f})</i>" if remaining > 0 else " ✅") + "\n\n"
+                f"<i>Данные носят рекомендательный характер. Проконсультируйся с врачом.</i>",
+                parse_mode="HTML",
+            )
+        else:
+            await thinking.edit_text(response, parse_mode="Markdown")
+
     except Exception as e:
         logger.error(f"Free chat error: {e}")
         await thinking.edit_text(
