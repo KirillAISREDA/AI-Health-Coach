@@ -146,9 +146,11 @@ class AIService:
         user_id: int,
         photo_bytes: bytes,
         user_profile: Optional[dict] = None,
+        caption: Optional[str] = None,
     ) -> str:
         """
         Первый шаг анализа фото: распознаём состав, НО спрашиваем вес у пользователя.
+        Если пользователь приложил подпись к фото — используем как уточнение.
         """
         b64 = base64.b64encode(photo_bytes).decode()
         image_content = {
@@ -159,9 +161,17 @@ class AIService:
         system = self._build_system_prompt(user_profile)
         history = await context_store.get_context(user_id)
 
+        # Если пользователь написал что именно на фото — добавляем как контекст
+        text_prompt = PHOTO_ANALYSIS_PROMPT
+        if caption:
+            text_prompt = (
+                f"Пользователь сообщил что на фото: «{caption}».\n\n"
+                + PHOTO_ANALYSIS_PROMPT
+            )
+
         user_content = [
             image_content,
-            {"type": "text", "text": PHOTO_ANALYSIS_PROMPT},
+            {"type": "text", "text": text_prompt},
         ]
 
         await context_store.add_message(user_id, "user", user_content)
@@ -191,10 +201,13 @@ class AIService:
         GPT уже знает состав блюда из контекста.
         """
         prompt = (
-            f"Пользователь указал, что порция весила {weight_g:.0f} г. "
-            f"Рассчитай КБЖУ для блюда из нашего предыдущего сообщения и выведи "
-            f"в таблице: | Блюдо | Вес (г) | Ккал | Белки (г) | Жиры (г) | Углеводы (г) |. "
-            f"После таблицы — краткий комментарий коуча."
+            f"Пользователь указал общий вес порции: {weight_g:.0f} г.\n"
+            f"Рассчитай КБЖУ для блюда/блюд из предыдущего сообщения.\n\n"
+            f"Если блюд несколько — сделай строку для каждого (распредели вес пропорционально) "
+            f"и итоговую строку.\n\n"
+            f"Формат таблицы:\n"
+            f"| Блюдо | Вес (г) | Ккал | Белки (г) | Жиры (г) | Углеводы (г) |\n\n"
+            f"После таблицы — одна строка комментария коуча."
         )
         return await self.chat(user_id, prompt, user_profile)
 
