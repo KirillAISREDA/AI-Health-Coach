@@ -120,6 +120,28 @@ def nutrition_menu_kb() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def portion_size_kb(portions: list[int]) -> InlineKeyboardMarkup:
+    """
+    Клавиатура с 3 кнопками типичных порций + ручной ввод.
+    portions: [150, 300, 450] — граммовки от маленькой до большой.
+    """
+    labels = ["🥄 Маленькая", "🍽️ Средняя", "🥘 Большая"]
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        *[
+            InlineKeyboardButton(
+                text=f"{labels[i]} (~{p}г)",
+                callback_data=f"portion:{p}",
+            )
+            for i, p in enumerate(portions[:3])
+        ]
+    )
+    builder.row(
+        InlineKeyboardButton(text="⚖️ Ввести точный вес", callback_data="portion:manual"),
+    )
+    return builder.as_markup()
+
+
 # ─── Общие ───────────────────────────────────────────────────────────────────
 
 def cancel_kb() -> InlineKeyboardMarkup:
