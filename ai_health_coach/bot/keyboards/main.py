@@ -115,8 +115,6 @@ def nutrition_menu_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="✏️ Записать текстом",   callback_data="food:text"),
-    )
-    builder.row(
         InlineKeyboardButton(text="📊 Дневник за сегодня", callback_data="food:today"),
     )
     return builder.as_markup()

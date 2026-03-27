@@ -40,14 +40,26 @@ async def stats_menu(message: Message, db_user, session: AsyncSession):
         empty  = "░" * (10 - len(filled))
         return f"[{filled}{empty}] {pct}%"
 
+    cal  = nutrition['calories']
+    prot = nutrition['protein']
+    fat  = nutrition['fat']
+    carbs = nutrition['carbs']
+    remaining = max(0, tdee - cal)
+    pct_remaining = int(remaining / tdee * 100) if tdee else 0
+
+    # Форматирование: целые числа без .0
+    def fmt_g(v): return f"{v:.0f}г" if v > 0 else "—"
+    def fmt_kcal(v): return f"{v:.0f}" if v > 0 else "0"
+
     await message.answer(
         f"📊 <b>Сводка за сегодня</b>\n\n"
         f"🔥 <b>Калории</b>\n"
         f"{bar(cal_pct)}\n"
-        f"{nutrition['calories']:.0f} / {tdee:.0f} ккал\n\n"
-        f"🥩 Белки: <b>{nutrition['protein']:.1f} г</b>   "
-        f"🧈 Жиры: <b>{nutrition['fat']:.1f} г</b>   "
-        f"🍞 Углеводы: <b>{nutrition['carbs']:.1f} г</b>\n\n"
+        f"{fmt_kcal(cal)} / {tdee:.0f} ккал"
+        + (f"  <i>(осталось {remaining:.0f})</i>" if cal > 0 and remaining > 0 else "") + "\n\n"
+        f"🥩 Белки: <b>{fmt_g(prot)}</b>   "
+        f"🧈 Жиры: <b>{fmt_g(fat)}</b>   "
+        f"🍞 Углеводы: <b>{fmt_g(carbs)}</b>\n\n"
         f"💧 <b>Вода</b>\n"
         f"{bar(water_pct)}\n"
         f"{water_ml} / {water_goal:.0f} мл",

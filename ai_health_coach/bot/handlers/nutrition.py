@@ -82,6 +82,9 @@ async def handle_food_photo(
     # Берём фото наилучшего качества
     photo: PhotoSize = message.photo[-1]
 
+    # Если к фото приложен текст — используем как подсказку для AI
+    caption = message.caption.strip() if message.caption else None
+
     thinking_msg = await message.answer("📸 Анализирую фото...")
 
     try:
@@ -96,11 +99,14 @@ async def handle_food_photo(
             user_id=message.from_user.id,
             photo_bytes=photo_bytes,
             user_profile=profile,
+            caption=caption,       # передаём описание пользователя
         )
 
-        # Сохраняем file_id для записи в БД после получения веса
+        # Если в caption уже указан вес/состав — пробуем сразу считать КБЖУ
+        # Иначе спрашиваем вес
         await state.update_data(
             photo_file_id=photo.file_id,
+            photo_caption=caption or "",
             step="waiting_weight",
         )
         await state.set_state(NutritionFSM.waiting_photo_weight)
@@ -129,12 +135,14 @@ async def handle_photo_weight(
         assert 10 <= weight_g <= 3000
     except (ValueError, AssertionError):
         await message.answer(
-            "⚖️ Введи вес в граммах, например: <code>350</code>",
+            "⚖️ Введи <b>общий вес порции</b> в граммах.\n\n"
+            "Если на фото несколько блюд — введи суммарный вес всего что ешь, например: <code>350</code>\n"
+            "(рис ~150г + курица ~150г + кофе ~50г = ~350г)",
             parse_mode="HTML",
         )
         return
 
-    thinking_msg = await message.answer("⚙️ Считаю КБЖУ...")
+    thinking_msg = await message.answer("⚙️ Считаю КБЖУ для {:.0f}г...".format(weight_g))
 
     try:
         profile = user_service.to_profile_dict(db_user)
@@ -151,7 +159,7 @@ async def handle_photo_weight(
         # Сохраняем лог с распарсенным КБЖУ
         food_log = FoodLog(
             user_id=db_user.id,
-            raw_input=f"[фото] вес: {weight_g}г",
+            raw_input=f"[фото] {fsm_data.get('photo_caption', '') or ''} вес: {weight_g}г".strip(),
             is_photo=True,
             photo_file_id=photo_file_id,
             weight_g=weight_g,

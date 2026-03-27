@@ -35,6 +35,11 @@ def parse_nutrition_from_text(text: str) -> dict:
     Возвращает {'calories': ..., 'protein_g': ..., 'fat_g': ..., 'carbs_g': ...}
     Если не найдено — возвращает пустой dict.
     """
+    # Убираем markdown-форматирование (GPT иногда оборачивает числа в **...**)
+    clean = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', text)
+    # Убираем HTML-теги если попались
+    clean = re.sub(r'<[^>]+>', '', clean)
+
     calories = protein = fat = carbs = 0.0
     found = False
 
@@ -48,7 +53,7 @@ def parse_nutrition_from_text(text: str) -> dict:
         r"\s*([\d.,~≈]+)\s*\|"                                 # углеводы
     )
 
-    rows = table_row.findall(text)
+    rows = table_row.findall(clean)
     if rows:
         for kcal, prot, f, carb in rows:
             v_kcal = _to_float(kcal)
@@ -72,7 +77,7 @@ def parse_nutrition_from_text(text: str) -> dict:
         ]
         result = {}
         for pattern, key in patterns:
-            m = re.search(pattern, text, re.IGNORECASE)
+            m = re.search(pattern, clean, re.IGNORECASE)
             if m:
                 result[key] = _to_float(m.group(1)) or 0
                 found = True
