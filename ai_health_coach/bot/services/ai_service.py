@@ -48,11 +48,43 @@ PHOTO_ANALYSIS_PROMPT = """Пользователь прислал фото ед
 
 Твоя задача:
 1. Определи все видимые продукты и блюда на фото.
-2. Опиши состав кратко (2-4 строки).
-3. Спроси: «⚖️ Сколько примерно весила эта порция в граммах?»
+2. Опиши состав кратко (2-3 строки).
+3. Предложи 3 варианта типичного веса порции для ЭТОГО конкретного блюда.
 
-НЕ рассчитывай КБЖУ до получения веса от пользователя.
-Ответ должен быть коротким и конкретным."""
+ФОРМАТ ОТВЕТА (строго):
+Сначала описание блюда, затем в ПОСЛЕДНЕЙ строке — ровно 3 варианта веса
+в формате PORTIONS:число1|число2|число3
+Числа — граммы, через вертикальную черту, без пробелов и текста.
+
+Примеры последней строки:
+- Для тарелки борща: PORTIONS:250|350|500
+- Для стейка: PORTIONS:150|200|300
+- Для салата «Цезарь»: PORTIONS:180|250|350
+- Для одного яблока: PORTIONS:130|180|220
+
+Подбирай граммовки реалистично для конкретного блюда!
+НЕ рассчитывай КБЖУ — только определи состав и предложи варианты веса."""
+
+
+import re as _re_portions
+
+def parse_portion_options(ai_response: str) -> list[int]:
+    """
+    Извлекает варианты веса порций из ответа AI.
+    Ищет строку формата PORTIONS:150|300|450
+    Возвращает список из 3 чисел или дефолт [150, 300, 450].
+    """
+    match = _re_portions.search(r"PORTIONS:\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)", ai_response)
+    if match:
+        portions = [int(match.group(i)) for i in (1, 2, 3)]
+        if all(20 <= p <= 3000 for p in portions):
+            return sorted(portions)
+    return [150, 300, 450]
+
+
+def clean_portions_tag(ai_response: str) -> str:
+    """Убирает техническую строку PORTIONS: из текста перед показом пользователю."""
+    return _re_portions.sub(r"\n?PORTIONS:\s*\d+\s*\|\s*\d+\s*\|\s*\d+\s*$", "", ai_response).strip()
 
 
 # ─── Redis context storage ───────────────────────────────────────────────────
@@ -187,7 +219,10 @@ class AIService:
         )
 
         answer = response.choices[0].message.content
-        await context_store.add_message(user_id, "assistant", answer)
+        # Сохраняем в контекст очищенный текст (без PORTIONS:)
+        clean_answer = clean_portions_tag(answer)
+        await context_store.add_message(user_id, "assistant", clean_answer)
+        # Возвращаем оригинал — хэндлер сам распарсит порции
         return answer
 
     async def calculate_nutrition_with_weight(

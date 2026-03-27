@@ -25,12 +25,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.services.ai_service import ai_service
+from bot.services.ai_service import ai_service, parse_portion_options, clean_portions_tag
 from bot.services.user_service import user_service
 from bot.services.nutrition_parser import save_nutrition_to_log
 from bot.utils.timezone import local_today
 from bot.models import FoodLog
-from bot.keyboards.main import nutrition_menu_kb, cancel_kb, main_menu_kb
+from bot.keyboards.main import nutrition_menu_kb, cancel_kb, main_menu_kb, portion_size_kb
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -129,41 +129,44 @@ async def handle_food_photo(
     session: AsyncSession,
     state: FSMContext,
 ):
-    """Шаг 1: принимаем фото, отдаём в AI для распознавания состава."""
+    """Шаг 1: принимаем фото → AI распознаёт → показываем кнопки порций."""
 
     if not db_user.onboarding_done:
         await message.answer("Сначала давай заполним анкету! Нажми /start")
         return
 
-    # Берём фото наилучшего качества
     photo: PhotoSize = message.photo[-1]
-
     thinking_msg = await message.answer("📸 Анализирую фото...")
 
     try:
-        # Скачиваем фото
         file = await bot.get_file(photo.file_id)
         buf = io.BytesIO()
         await bot.download_file(file.file_path, buf)
         photo_bytes = buf.getvalue()
 
         profile = user_service.to_profile_dict(db_user)
-        response = await ai_service.analyze_food_photo(
+        raw_response = await ai_service.analyze_food_photo(
             user_id=message.from_user.id,
             photo_bytes=photo_bytes,
             user_profile=profile,
         )
 
-        # Сохраняем file_id для записи в БД после получения веса
+        # Парсим варианты порций и очищаем текст от служебной строки
+        portions = parse_portion_options(raw_response)
+        display_text = clean_portions_tag(raw_response)
+
+        # Сохраняем данные в FSM
         await state.update_data(
             photo_file_id=photo.file_id,
-            step="waiting_weight",
+            portions=portions,
         )
         await state.set_state(NutritionFSM.waiting_photo_weight)
 
-        # ⚠️ ВАЖНО: показываем именно ответ AI (распознанные продукты + вопрос про вес).
-        # НЕ подменяем на шаблонный текст "Введи общий вес порции..."!
-        await thinking_msg.edit_text(response, parse_mode="Markdown")
+        await thinking_msg.edit_text(
+            display_text + "\n\n⚖️ <b>Выбери размер порции:</b>",
+            parse_mode="HTML",
+            reply_markup=portion_size_kb(portions),
+        )
 
     except Exception as e:
         logger.error(f"Photo analysis error: {e}")
@@ -172,7 +175,84 @@ async def handle_food_photo(
         )
 
 
-# ─── Шаг 2: пользователь ввёл вес порции → считаем КБЖУ ─────────────────────
+# ─── Кнопки выбора порции ────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("portion:"))
+async def cb_portion_selected(
+    call: CallbackQuery,
+    db_user,
+    session: AsyncSession,
+    state: FSMContext,
+):
+    """Пользователь выбрал размер порции кнопкой."""
+    current_state = await state.get_state()
+    if current_state != NutritionFSM.waiting_photo_weight.state:
+        await call.answer("⏳ Сначала отправь фото блюда")
+        return
+
+    portion_data = call.data.split(":", 1)[1]
+
+    # Если выбрал "ввести вручную" — просим текстом
+    if portion_data == "manual":
+        await call.message.edit_text(
+            call.message.text + "\n\n✏️ Введи вес порции в граммах:",
+            parse_mode="HTML",
+        )
+        await call.answer()
+        return  # FSM остаётся в waiting_photo_weight → поймает handle_photo_weight
+
+    # Иначе — это конкретный вес
+    try:
+        weight_g = float(portion_data)
+    except ValueError:
+        await call.answer("Ошибка, попробуй снова")
+        return
+
+    await call.answer("⚙️ Считаю КБЖУ...")
+
+    try:
+        await call.message.edit_text(
+            call.message.text.replace(
+                "⚖️ <b>Выбери размер порции:</b>",
+                f"⚖️ Порция: <b>~{weight_g:.0f}г</b> (оценка)\n\n⏳ Считаю КБЖУ..."
+            ),
+            parse_mode="HTML",
+        )
+
+        profile = user_service.to_profile_dict(db_user)
+        response = await ai_service.calculate_nutrition_with_weight(
+            user_id=call.from_user.id,
+            weight_g=weight_g,
+            user_profile=profile,
+        )
+
+        fsm_data = await state.get_data()
+        photo_file_id = fsm_data.get("photo_file_id")
+
+        food_log = FoodLog(
+            user_id=db_user.id,
+            raw_input=f"[фото] порция: ~{weight_g:.0f}г",
+            is_photo=True,
+            photo_file_id=photo_file_id,
+            weight_g=weight_g,
+            weight_confirmed=False,
+            meal_date=local_today(db_user),
+        )
+        await save_nutrition_to_log(session, food_log, response)
+        await state.clear()
+
+        await call.message.edit_text(
+            response + "\n\n✅ <i>Записал в дневник! (вес оценён ±20%)</i>",
+            parse_mode="HTML",
+        )
+
+    except Exception as e:
+        logger.error(f"Portion calc error for user {db_user.id}: {e}")
+        await call.message.edit_text("😕 Ошибка при расчёте. Попробуй снова.")
+        await state.clear()
+
+
+# ─── Шаг 2: ручной ввод веса (fallback) ──────────────────────────────────────
 
 @router.message(NutritionFSM.waiting_photo_weight)
 async def handle_photo_weight(
