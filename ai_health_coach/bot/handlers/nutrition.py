@@ -94,6 +94,47 @@ def _safe_float(s: str) -> float | None:
         return None
 
 
+# ─── Хелпер: сводка дня после записи ─────────────────────────────────────────
+
+async def _build_day_summary(session, db_user, food_log) -> str:
+    """Строит сводку дня после записи приёма пищи."""
+    from bot.services.nutrition_parser import parse_nutrition_from_text
+
+    cal  = food_log.calories or 0
+    prot = food_log.protein_g or 0
+    fat  = food_log.fat_g or 0
+    carbs = food_log.carbs_g or 0
+    tdee = db_user.tdee_kcal or 2000
+
+    def fmt(v): return f"{v:.0f}г" if v > 0 else "—"
+
+    lines = [f"✅ <b>Записал в дневник!</b>\n"]
+
+    if cal > 0:
+        lines.append(
+            f"🥗 <b>Этот приём:</b> {cal:.0f} ккал  "
+            f"🥩{fmt(prot)}  🧈{fmt(fat)}  🍞{fmt(carbs)}"
+        )
+    else:
+        lines.append("⚠️ <i>Не удалось распознать КБЖУ — запись сохранена без калорий.</i>")
+
+    # Дневная сводка
+    today_stats = await user_service.get_today_nutrition(session, db_user.id, local_today(db_user))
+    day_cal = today_stats["calories"]
+    remaining = max(0, tdee - day_cal)
+    pct = min(100, int(day_cal / tdee * 100)) if tdee else 0
+    bar_f = "█" * (pct // 10)
+    bar_e = "░" * (10 - len(bar_f))
+
+    lines.append(
+        f"\n📊 <b>Итого за сегодня:</b>\n"
+        f"[{bar_f}{bar_e}] {pct}%\n"
+        f"{day_cal:.0f} / {tdee:.0f} ккал"
+        + (f"  <i>(осталось {remaining:.0f})</i>" if remaining > 0 else " ✅")
+    )
+    return "\n".join(lines)
+
+
 # ─── Меню питания ────────────────────────────────────────────────────────────
 
 @router.message(F.text == "🥗 Питание")
@@ -241,10 +282,8 @@ async def cb_portion_selected(
         await save_nutrition_to_log(session, food_log, response)
         await state.clear()
 
-        await call.message.edit_text(
-            response + "\n\n✅ <i>Записал в дневник! (вес оценён ±20%)</i>",
-            parse_mode="HTML",
-        )
+        summary = await _build_day_summary(session, db_user, food_log)
+        await call.message.edit_text(summary, parse_mode="HTML")
 
     except Exception as e:
         logger.error(f"Portion calc error for user {db_user.id}: {e}")
@@ -311,10 +350,8 @@ async def handle_photo_weight(
         await save_nutrition_to_log(session, food_log, response)
 
         await state.clear()
-        await thinking_msg.edit_text(
-            response + "\n\n✅ <i>Записал в дневник!</i>",
-            parse_mode="HTML",
-        )
+        summary = await _build_day_summary(session, db_user, food_log)
+        await thinking_msg.edit_text(summary, parse_mode="HTML")
 
     except Exception as e:
         logger.error(f"Nutrition calc error: {e}")
@@ -357,10 +394,8 @@ async def handle_food_text(
         await save_nutrition_to_log(session, food_log, response)
 
         await state.clear()
-        await thinking_msg.edit_text(
-            response + "\n\n✅ <i>Записал в дневник!</i>",
-            parse_mode="HTML",
-        )
+        summary = await _build_day_summary(session, db_user, food_log)
+        await thinking_msg.edit_text(summary, parse_mode="HTML")
 
     except Exception as e:
         logger.error(f"Food text error: {e}")
