@@ -128,12 +128,14 @@ def parse_nutrition_from_text(text: str) -> dict:
             found = True
 
     # Если таблицы нет — ищем паттерны типа "Ккал: 350" / "калорий: 350"
+    # Разделители: двоеточие, тире, пробел, ~, ≈
+    _sep = r"[:\s\-—–~≈]+"
     if not found:
         patterns = [
-            (r"(?:ккал|калори[ий]|calories)[:\s~≈]+(\d+[\.,]?\d*)",    "calories"),
-            (r"(?:белк\w+|protein)[:\s~≈]+(\d+[\.,]?\d*)",              "protein"),
-            (r"(?:жир\w*|fat)[:\s~≈]+(\d+[\.,]?\d*)",                  "fat"),
-            (r"(?:углевод\w*|carb[s]?)[:\s~≈]+(\d+[\.,]?\d*)",         "carbs"),
+            (r"(?:калорийност\w*|энергетическ\w+\s+ценност\w*|ккал|калори[ий]|calories)" + _sep + r"~?(\d+[\.,]?\d*)",  "calories"),
+            (r"(?:белк\w+|protein)" + _sep + r"~?(\d+[\.,]?\d*)",                           "protein"),
+            (r"(?:жир\w*|fat)" + _sep + r"~?(\d+[\.,]?\d*)",                               "fat"),
+            (r"(?:углевод\w*|carb[s]?)" + _sep + r"~?(\d+[\.,]?\d*)",                      "carbs"),
         ]
         result = {}
         for pattern, key in patterns:
@@ -146,6 +148,20 @@ def parse_nutrition_from_text(text: str) -> dict:
             protein  = result.get("protein", 0)
             fat      = result.get("fat", 0)
             carbs    = result.get("carbs", 0)
+
+    # Ещё один fallback: "NNN ккал" + "NNг белка" в произвольном тексте
+    if not found:
+        m_cal = re.search(r"(\d+[\.,]?\d*)\s*(?:ккал|калори)", clean, re.IGNORECASE)
+        m_prot = re.search(r"(\d+[\.,]?\d*)\s*г?\s*белк", clean, re.IGNORECASE)
+        m_fat = re.search(r"(\d+[\.,]?\d*)\s*г?\s*жир", clean, re.IGNORECASE)
+        m_carb = re.search(r"(\d+[\.,]?\d*)\s*г?\s*углевод", clean, re.IGNORECASE)
+        if m_cal:
+            calories = _to_float(m_cal.group(1)) or 0
+            protein = (_to_float(m_prot.group(1)) or 0) if m_prot else 0
+            fat = (_to_float(m_fat.group(1)) or 0) if m_fat else 0
+            carbs = (_to_float(m_carb.group(1)) or 0) if m_carb else 0
+            if calories > 5:
+                found = True
 
     if not found or calories == 0:
         return {}
@@ -188,7 +204,8 @@ async def save_nutrition_to_log(
         )
     else:
         logger.warning(
-            f"Could not parse nutrition from AI response for user {food_log.user_id}"
+            f"Could not parse nutrition from AI response for user {food_log.user_id}. "
+            f"Response preview: {ai_response[:200]!r}"
         )
 
     return food_log
