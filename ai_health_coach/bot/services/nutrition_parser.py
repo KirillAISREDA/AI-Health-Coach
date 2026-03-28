@@ -62,15 +62,26 @@ def parse_nutrition_from_text(text: str) -> dict:
         r"\s*([\d.,~≈]+)\s*\|"                                       # углеводы
     )
 
+    # Также ловим упрощённую таблицу без колонки веса:
+    # | Продукт | Ккал | Белки | Жиры | Углеводы |
+    table_row_simple = re.compile(
+        r"\|\s*([^|]+?)\s*\|"           # блюдо
+        r"\s*([\d.,~≈]+)\s*\|"          # ккал
+        r"\s*([\d.,~≈]+)\s*\|"          # белки
+        r"\s*([\d.,~≈]+)\s*\|"          # жиры
+        r"\s*([\d.,~≈]+)\s*\|"          # углеводы
+    )
+
+    summary_words = ["итого", "итог", "total", "всего", "среднее", "average", "sum"]
+    summary_row = None  # сохраняем итоговую строку на случай если обычных нет
+
     rows = table_row_full.findall(clean)
     if rows:
         for dish, kcal, prot, f, carb in rows:
             dish_lower = dish.strip().lower()
-            # Пропускаем итоговые строки
-            is_summary = any(w in dish_lower for w in [
-                "итого", "итог", "total", "всего", "среднее", "average", "sum"
-            ])
+            is_summary = any(w in dish_lower for w in summary_words)
             if is_summary:
+                summary_row = (kcal, prot, f, carb)
                 continue
             v_kcal = _to_float(kcal)
             v_prot = _to_float(prot)
@@ -82,6 +93,39 @@ def parse_nutrition_from_text(text: str) -> dict:
                 fat      += v_fat  or 0
                 carbs    += v_carb or 0
                 found = True
+
+    # Пробуем упрощённую таблицу (без колонки веса)
+    if not found:
+        rows_simple = table_row_simple.findall(clean)
+        for dish, kcal, prot, f, carb in rows_simple:
+            dish_lower = dish.strip().lower()
+            # Пропускаем заголовки и разделители
+            if any(w in dish_lower for w in ["блюдо", "продукт", "---", "ккал"]):
+                continue
+            is_summary = any(w in dish_lower for w in summary_words)
+            if is_summary:
+                summary_row = (kcal, prot, f, carb)
+                continue
+            v_kcal = _to_float(kcal)
+            v_prot = _to_float(prot)
+            v_fat  = _to_float(f)
+            v_carb = _to_float(carb)
+            if v_kcal and v_kcal > 5:
+                calories += v_kcal
+                protein  += v_prot or 0
+                fat      += v_fat  or 0
+                carbs    += v_carb or 0
+                found = True
+
+    # Если нашли только итоговую строку — используем её
+    if not found and summary_row:
+        v_kcal = _to_float(summary_row[0])
+        if v_kcal and v_kcal > 5:
+            calories = v_kcal
+            protein  = _to_float(summary_row[1]) or 0
+            fat      = _to_float(summary_row[2]) or 0
+            carbs    = _to_float(summary_row[3]) or 0
+            found = True
 
     # Если таблицы нет — ищем паттерны типа "Ккал: 350" / "калорий: 350"
     if not found:
