@@ -8,6 +8,7 @@ AI Service — обёртка над OpenAI GPT-4o.
 """
 
 import json
+import asyncio
 import base64
 import logging
 from typing import Optional
@@ -64,6 +65,46 @@ PHOTO_ANALYSIS_PROMPT = """Пользователь прислал фото ед
 
 Подбирай граммовки реалистично для конкретного блюда!
 НЕ рассчитывай КБЖУ — только определи состав и предложи варианты веса."""
+
+
+FOOD_JSON_PROMPT = """Проанализируй еду и верни результат СТРОГО в формате JSON.
+Никакого текста до или после JSON — только валидный JSON-объект.
+
+Формат:
+{
+  "items": [
+    {
+      "name": "название продукта",
+      "weight_g": <оценка веса в граммах>,
+      "calories": <ккал>,
+      "protein": <белки в граммах>,
+      "fat": <жиры в граммах>,
+      "carbs": <углеводы в граммах>
+    }
+  ],
+  "total": {
+    "weight_g": <сумма весов>,
+    "calories": <сумма ккал>,
+    "protein": <сумма белков>,
+    "fat": <сумма жиров>,
+    "carbs": <сумма углеводов>
+  },
+  "comment": "<краткий комментарий коуча — 1 предложение, с эмодзи>",
+  "confidence": "high" | "medium" | "low"
+}
+
+ПРАВИЛА:
+- Если это фото: оцени вес КАЖДОГО компонента визуально по размеру тарелки/порции.
+  Типичная тарелка ≈ 25 см. Используй визуальные подсказки для оценки.
+- Если это текст: парси количество и вес из описания. Если вес не указан —
+  используй стандартные порции (яйцо=60г, тост=30г, стакан=250мл).
+- КБЖУ считай на основе оценённого веса по стандартным таблицам нутриентов.
+- confidence: "high" — продукты чётко видны/описаны, вес легко оценить;
+  "medium" — есть сомнения по составу или весу;
+  "low" — сложно определить или фото нечёткое.
+- Числа округляй до целых (кроме граммов белков/жиров/углеводов — до 1 знака).
+- comment: дружеский, мотивирующий. Если еда вредная — без нотаций, правило 80/20.
+- Отвечай ТОЛЬКО JSON. Ничего кроме JSON."""
 
 
 import re as _re_portions
@@ -249,6 +290,128 @@ class AIService:
             f"После таблицы — краткий комментарий коуча (1-2 предложения)."
         )
         return await self.chat(user_id, prompt, user_profile)
+
+    async def analyze_food_complete(
+        self,
+        user_id: int,
+        photo_bytes: bytes | None = None,
+        text_input: str | None = None,
+        user_profile: dict | None = None,
+    ) -> dict | None:
+        """
+        Единый метод анализа еды: фото и/или текст → JSON с КБЖУ.
+        1 вызов AI вместо 2, JSON mode, timeout 30с + 1 retry.
+        """
+        import base64
+
+        system = self._build_system_prompt(user_profile)
+        content = []
+
+        if photo_bytes:
+            b64 = base64.b64encode(photo_bytes).decode()
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"},
+            })
+
+        prompt_parts = []
+        if text_input:
+            prompt_parts.append(f"Пользователь описал еду: «{text_input}»\n")
+        if photo_bytes:
+            prompt_parts.append("Пользователь прислал фото еды.\n")
+        prompt_parts.append(FOOD_JSON_PROMPT)
+        content.append({"type": "text", "text": "\n".join(prompt_parts)})
+
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": content},
+        ]
+
+        last_error = None
+        for attempt in range(2):
+            try:
+                response = await asyncio.wait_for(
+                    self.client.chat.completions.create(
+                        model=settings.openai_model,
+                        messages=messages,
+                        max_tokens=800,
+                        temperature=0.3,
+                        response_format={"type": "json_object"},
+                    ),
+                    timeout=30.0,
+                )
+
+                raw = response.choices[0].message.content
+                result = json.loads(raw)
+
+                if not isinstance(result.get("items"), list):
+                    logger.warning(f"AI: no items array. Raw: {raw[:200]}")
+                    last_error = "invalid structure"
+                    continue
+
+                total = result.get("total", {})
+                if not total.get("calories"):
+                    total = self._sum_items(result["items"])
+                    result["total"] = total
+
+                if not total.get("calories"):
+                    logger.warning(f"AI: 0 calories. Raw: {raw[:200]}")
+                    last_error = "zero calories"
+                    continue
+
+                try:
+                    summary = (
+                        f"Пользователь съел: "
+                        + ", ".join(i.get("name", "?") for i in result["items"])
+                        + f". Итого: {total['calories']:.0f} ккал."
+                    )
+                    await context_store.add_message(user_id, "user", summary)
+                    await context_store.add_message(
+                        user_id, "assistant",
+                        f"Записал в дневник: {total['calories']:.0f} ккал, "
+                        f"Б:{total.get('protein',0):.0f}г, "
+                        f"Ж:{total.get('fat',0):.0f}г, "
+                        f"У:{total.get('carbs',0):.0f}г."
+                    )
+                except Exception:
+                    pass
+
+                logger.info(
+                    f"AI food analysis OK: user={user_id} "
+                    f"cal={total['calories']:.0f} items={len(result['items'])} "
+                    f"attempt={attempt+1}"
+                )
+                return result
+
+            except asyncio.TimeoutError:
+                logger.warning(f"AI timeout: user={user_id} attempt={attempt+1}")
+                last_error = "timeout"
+            except json.JSONDecodeError as e:
+                logger.error(f"AI JSON parse error: {e}")
+                last_error = "json_error"
+            except Exception as e:
+                logger.error(f"AI call error: {e}", exc_info=True)
+                last_error = str(e)
+
+        logger.error(f"AI food analysis FAILED: user={user_id} last_error={last_error}")
+        return None
+
+    @staticmethod
+    def _sum_items(items: list[dict]) -> dict:
+        """Суммирует КБЖУ из списка items."""
+        total = {"weight_g": 0, "calories": 0, "protein": 0, "fat": 0, "carbs": 0}
+        for item in items:
+            for key in total:
+                try:
+                    total[key] += float(item.get(key, 0) or 0)
+                except (ValueError, TypeError):
+                    pass
+        total["calories"] = round(total["calories"])
+        total["weight_g"] = round(total["weight_g"])
+        total["protein"]  = round(total["protein"], 1)
+        total["fat"]      = round(total["fat"], 1)
+        total["carbs"]    = round(total["carbs"], 1)
+        return total
 
     async def generate_weekly_digest(
         self,

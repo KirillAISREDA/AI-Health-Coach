@@ -1,138 +1,219 @@
 """
-Модуль питания.
+Модуль питания v2.
 
-Флоу фото:
-1. Пользователь присылает фото → AI распознаёт состав и просит вес.
-2. Пользователь вводит вес (граммы) → AI считает КБЖУ, бот сохраняет в БД.
+АРХИТЕКТУРА:
+- 1 вызов AI на приём пищи (фото или текст) — JSON mode
+- Сохранение в БД СРАЗУ, до взаимодействия с юзером
+- Опциональная коррекция веса inline-кнопками (чистая математика, без AI)
+- Fallback на локальную базу продуктов при сбое AI
 
-Флоу текста:
-1. Пользователь пишет что съел → AI парсит, выдаёт КБЖУ → сохраняем.
-
-ФИКСЫ (v2):
-- Умный парсер веса: понимает "итого 240 г", "240", "240г", развёрнутый список с итогом
-- AI-ответ после фото показывается сразу (без подмены шаблоном)
-- Убрано двойное сообщение с запросом веса
+FSM-состояния (оба — необязательные, данные уже сохранены):
+- waiting_food_text: юзер нажал «записать текстом»
+- correcting_weight: юзер нажал «уточнить вес» на записи
 """
 
 import logging
 import io
 import re
-from datetime import date
 
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery, PhotoSize
+from aiogram.types import (
+    Message, CallbackQuery, PhotoSize,
+    InlineKeyboardMarkup, InlineKeyboardButton,
+)
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.services.ai_service import ai_service, parse_portion_options, clean_portions_tag
+from bot.services.ai_service import ai_service
 from bot.services.user_service import user_service
-from bot.services.nutrition_parser import save_nutrition_to_log
+from bot.services.food_database import food_db
 from bot.utils.timezone import local_today
 from bot.models import FoodLog
-from bot.keyboards.main import nutrition_menu_kb, cancel_kb, main_menu_kb, portion_size_kb
+from bot.keyboards.main import nutrition_menu_kb, cancel_kb, main_menu_kb
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 
+# ─── FSM (минимум состояний) ─────────────────────────────────────────────────
+
 class NutritionFSM(StatesGroup):
-    waiting_photo_weight   = State()   # ждём вес после фото
-    waiting_food_text      = State()   # ждём текстовый ввод еды
+    waiting_food_text  = State()  # юзер нажал «записать текстом»
+    correcting_weight  = State()  # юзер нажал «уточнить вес»
 
 
-# ─── Утилита: извлечение веса из текста ──────────────────────────────────────
+# ─── Клавиатуры ──────────────────────────────────────────────────────────────
 
-def _extract_weight_from_text(text: str) -> float | None:
-    """
-    Умный парсер веса порции. Обрабатывает:
-    - Голое число: "240", "350.5"
-    - С единицами: "240г", "240 гр", "240 грамм"
-    - "Итого 240 г", "Всего 350", "= 240"
-    - Развёрнутый список с "Итого NNN гр" в конце
-    - Число с запятой: "350,5"
-
-    Возвращает float или None если не удалось распознать.
-    """
-    if not text or not text.strip():
-        return None
-
-    text = text.strip()
-
-    # 1. Паттерн "итого/всего/общий вес/= ~NNN"
-    match = re.search(
-        r'(?:итого|всего|общий\s*вес|суммарн\w*\s*вес|=)\s*~?\s*(\d+[.,]?\d*)',
-        text,
-        re.IGNORECASE,
+def nutrition_result_kb(log_id: int, confidence: str = "medium") -> InlineKeyboardMarkup:
+    """Кнопки после сохранения записи."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Ок", callback_data=f"food_ok:{log_id}"),
+        InlineKeyboardButton(text="⚖️ Уточнить вес", callback_data=f"food_fix:{log_id}"),
     )
-    if match:
-        return _safe_float(match.group(1))
-
-    # 2. Если текст — просто число (возможно с "г"/"гр"/"грамм")
-    clean = re.sub(r'\s*(г|гр|грамм|грамов|gram[s]?)\s*$', '', text, flags=re.IGNORECASE).strip()
-    clean = clean.replace(",", ".").strip()
-    try:
-        val = float(clean)
-        return val
-    except ValueError:
-        pass
-
-    # 3. Если текст длинный (список продуктов) — ищем последнее число
-    #    Приоритет: числа рядом со словами "итого"/"всего"
-    numbers = re.findall(r'(\d+[.,]?\d*)', text)
-    if numbers:
-        # Берём последнее число — обычно это итог
-        return _safe_float(numbers[-1])
-
-    return None
+    builder.row(
+        InlineKeyboardButton(text="❌ Удалить запись", callback_data=f"food_del:{log_id}"),
+    )
+    return builder.as_markup()
 
 
-def _safe_float(s: str) -> float | None:
-    try:
-        return float(s.replace(",", "."))
-    except (ValueError, TypeError):
-        return None
+# ─── Форматирование ─────────────────────────────────────────────────────────
 
+def format_nutrition_message(data: dict, source: str = "ai") -> str:
+    """
+    Форматирует структурированный dict в читаемое сообщение.
+    source: "ai" | "fallback"
+    """
+    items = data.get("items", [])
+    total = data.get("total", {})
+    comment = data.get("comment", "")
+    confidence = data.get("confidence", "medium")
 
-# ─── Хелпер: сводка дня после записи ─────────────────────────────────────────
+    lines = ["🥗 <b>Анализ приёма пищи</b>"]
+    if source == "fallback":
+        lines.append("<i>(оценка по базе продуктов — AI временно недоступен)</i>")
+    lines.append("")
 
-async def _build_day_summary(session, db_user, food_log) -> str:
-    """Строит сводку дня после записи приёма пищи."""
-    from bot.services.nutrition_parser import parse_nutrition_from_text
+    for item in items:
+        name = item.get("name", "?")
+        w = item.get("weight_g", 0)
+        cal = item.get("calories", 0)
+        lines.append(f"  ├ {name}: ~{w:.0f}г ({cal:.0f} ккал)")
 
-    cal  = food_log.calories or 0
-    prot = food_log.protein_g or 0
-    fat  = food_log.fat_g or 0
-    carbs = food_log.carbs_g or 0
-    tdee = db_user.tdee_kcal or 2000
+    t_cal = total.get("calories", 0)
+    t_p   = total.get("protein", 0)
+    t_f   = total.get("fat", 0)
+    t_c   = total.get("carbs", 0)
 
-    def fmt(v): return f"{v:.0f}г" if v > 0 else "—"
-
-    lines = [f"✅ <b>Записал в дневник!</b>\n"]
-
-    if cal > 0:
-        lines.append(
-            f"🥗 <b>Этот приём:</b> {cal:.0f} ккал  "
-            f"🥩{fmt(prot)}  🧈{fmt(fat)}  🍞{fmt(carbs)}"
-        )
-    else:
-        lines.append("⚠️ <i>Не удалось распознать КБЖУ — запись сохранена без калорий.</i>")
-
-    # Дневная сводка
-    today_stats = await user_service.get_today_nutrition(session, db_user.id, local_today(db_user))
-    day_cal = today_stats["calories"]
-    remaining = max(0, tdee - day_cal)
-    pct = min(100, int(day_cal / tdee * 100)) if tdee else 0
-    bar_f = "█" * (pct // 10)
-    bar_e = "░" * (10 - len(bar_f))
-
+    lines.append("")
     lines.append(
-        f"\n📊 <b>Итого за сегодня:</b>\n"
-        f"[{bar_f}{bar_e}] {pct}%\n"
-        f"{day_cal:.0f} / {tdee:.0f} ккал"
-        + (f"  <i>(осталось {remaining:.0f})</i>" if remaining > 0 else " ✅")
+        f"📊 <b>Итого: {t_cal:.0f} ккал</b>\n"
+        f"  ├ 🥩 Белки: <b>{t_p:.1f}г</b>\n"
+        f"  ├ 🧈 Жиры: <b>{t_f:.1f}г</b>\n"
+        f"  └ 🍞 Углеводы: <b>{t_c:.1f}г</b>"
     )
+
+    if confidence == "low" or source == "fallback":
+        lines.append(
+            "\n⚠️ <i>Оценка приблизительная — нажми «Уточнить вес» для точности</i>"
+        )
+
+    if comment:
+        lines.append(f"\n💬 {comment}")
+
+    lines.append("\n✅ <i>Записал в дневник!</i>")
     return "\n".join(lines)
+
+
+# ─── Сохранение в БД ─────────────────────────────────────────────────────────
+
+async def save_food_log(
+    session: AsyncSession,
+    db_user,
+    data: dict,
+    raw_input: str,
+    is_photo: bool = False,
+    photo_file_id: str | None = None,
+) -> FoodLog:
+    """Сохраняет запись о приёме пищи из структурированного dict."""
+    total = data.get("total", {})
+
+    food_log = FoodLog(
+        user_id=db_user.id,
+        raw_input=raw_input[:500],
+        description=data.get("comment", "")[:500],
+        is_photo=is_photo,
+        photo_file_id=photo_file_id,
+        weight_g=total.get("weight_g"),
+        weight_confirmed=False,
+        meal_date=local_today(db_user),
+        calories=total.get("calories"),
+        protein_g=total.get("protein"),
+        fat_g=total.get("fat"),
+        carbs_g=total.get("carbs"),
+    )
+    session.add(food_log)
+    await session.commit()
+    await session.refresh(food_log)
+
+    logger.info(
+        f"Food saved: user={db_user.id} cal={total.get('calories', 0):.0f} "
+        f"log_id={food_log.id}"
+    )
+    return food_log
+
+
+# ─── Общий обработчик: AI → fallback → ошибка ───────────────────────────────
+
+async def _process_food(
+    session: AsyncSession,
+    db_user,
+    thinking_msg: Message,
+    raw_input: str,
+    photo_bytes: bytes | None = None,
+    text_input: str | None = None,
+    is_photo: bool = False,
+    photo_file_id: str | None = None,
+) -> bool:
+    """
+    Универсальный обработчик: пробует AI → fallback → ошибка.
+    Возвращает True если данные сохранены, False если ничего не получилось.
+    """
+    profile = user_service.to_profile_dict(db_user)
+    user_id = db_user.id
+
+    # ── Шаг 1: Пробуем AI (JSON mode, 1 вызов) ──
+    data = None
+    try:
+        data = await ai_service.analyze_food_complete(
+            user_id=user_id,
+            photo_bytes=photo_bytes,
+            text_input=text_input,
+            user_profile=profile,
+        )
+    except Exception as e:
+        logger.warning(f"AI call failed for user {user_id}: {e}")
+
+    if data and data.get("total", {}).get("calories"):
+        food_log = await save_food_log(
+            session, db_user, data,
+            raw_input=raw_input,
+            is_photo=is_photo,
+            photo_file_id=photo_file_id,
+        )
+        confidence = data.get("confidence", "medium")
+        await thinking_msg.edit_text(
+            format_nutrition_message(data, source="ai"),
+            parse_mode="HTML",
+            reply_markup=nutrition_result_kb(food_log.id, confidence),
+        )
+        return True
+
+    # ── Шаг 2: Fallback — локальная база (только для текста) ──
+    if text_input:
+        logger.info(f"AI failed, trying local DB: {text_input[:80]}")
+        try:
+            fallback_data = food_db.estimate_from_text(text_input)
+
+            if fallback_data and fallback_data.get("total", {}).get("calories"):
+                food_log = await save_food_log(
+                    session, db_user, fallback_data,
+                    raw_input=raw_input,
+                    is_photo=is_photo,
+                    photo_file_id=photo_file_id,
+                )
+                await thinking_msg.edit_text(
+                    format_nutrition_message(fallback_data, source="fallback"),
+                    parse_mode="HTML",
+                    reply_markup=nutrition_result_kb(food_log.id, "low"),
+                )
+                return True
+        except Exception as e:
+            logger.error(f"Fallback DB error: {e}")
+
+    return False
 
 
 # ─── Меню питания ────────────────────────────────────────────────────────────
@@ -153,14 +234,14 @@ async def cb_food_text(call: CallbackQuery, state: FSMContext):
     await call.message.edit_text(
         "✏️ Напиши, что ты съел. Можно в свободной форме:\n\n"
         "<i>«Два варёных яйца, тост с маслом и чай с сахаром»</i>\n\n"
-        "Я сам разберусь с составом и размером порции 👇",
+        "Я сам разберусь с составом и порциями 👇",
         parse_mode="HTML",
         reply_markup=cancel_kb(),
     )
     await call.answer()
 
 
-# ─── Обработка фото ──────────────────────────────────────────────────────────
+# ─── Обработка фото ─────────────────────────────────────────────────────────
 
 @router.message(F.photo)
 async def handle_food_photo(
@@ -170,13 +251,14 @@ async def handle_food_photo(
     session: AsyncSession,
     state: FSMContext,
 ):
-    """Шаг 1: принимаем фото → AI распознаёт → показываем кнопки порций."""
+    """Фото еды → 1 вызов AI (JSON) → сохранение → кнопки."""
 
     if not db_user.onboarding_done:
         await message.answer("Сначала давай заполним анкету! Нажми /start")
         return
 
     photo: PhotoSize = message.photo[-1]
+    caption = message.caption or ""
     thinking_msg = await message.answer("📸 Анализирую фото...")
 
     try:
@@ -184,182 +266,32 @@ async def handle_food_photo(
         buf = io.BytesIO()
         await bot.download_file(file.file_path, buf)
         photo_bytes = buf.getvalue()
-
-        profile = user_service.to_profile_dict(db_user)
-        raw_response = await ai_service.analyze_food_photo(
-            user_id=message.from_user.id,
-            photo_bytes=photo_bytes,
-            user_profile=profile,
-        )
-
-        # Парсим варианты порций и очищаем текст от служебной строки
-        portions = parse_portion_options(raw_response)
-        display_text = clean_portions_tag(raw_response)
-
-        # Сохраняем данные в FSM
-        await state.update_data(
-            photo_file_id=photo.file_id,
-            portions=portions,
-        )
-        await state.set_state(NutritionFSM.waiting_photo_weight)
-
+    except Exception as e:
+        logger.error(f"Photo download error: {e}")
         await thinking_msg.edit_text(
-            display_text + "\n\n⚖️ <b>Выбери размер порции:</b>",
-            parse_mode="HTML",
-            reply_markup=portion_size_kb(portions),
+            "😕 Не удалось скачать фото. Попробуй ещё раз."
         )
+        return
 
-    except Exception as e:
-        logger.error(f"Photo analysis error: {e}")
+    saved = await _process_food(
+        session, db_user, thinking_msg,
+        raw_input=f"[фото] {caption}" if caption else "[фото]",
+        photo_bytes=photo_bytes,
+        text_input=caption if caption else None,
+        is_photo=True,
+        photo_file_id=photo.file_id,
+    )
+
+    if not saved:
         await thinking_msg.edit_text(
-            "😕 Не смог обработать фото. Попробуй снова или опиши блюдо текстом."
-        )
-
-
-# ─── Кнопки выбора порции ────────────────────────────────────────────────────
-
-@router.callback_query(F.data.startswith("portion:"))
-async def cb_portion_selected(
-    call: CallbackQuery,
-    db_user,
-    session: AsyncSession,
-    state: FSMContext,
-):
-    """Пользователь выбрал размер порции кнопкой."""
-    current_state = await state.get_state()
-    if current_state != NutritionFSM.waiting_photo_weight.state:
-        await call.answer("⏳ Сначала отправь фото блюда")
-        return
-
-    portion_data = call.data.split(":", 1)[1]
-
-    # Если выбрал "ввести вручную" — просим текстом
-    if portion_data == "manual":
-        await call.message.edit_text(
-            call.message.text + "\n\n✏️ Введи вес порции в граммах:",
+            "😕 Не удалось распознать блюдо. Попробуй описать текстом:\n\n"
+            "<i>«Куриная котлета 100г, капуста 80г, спаржа 60г»</i>",
             parse_mode="HTML",
         )
-        await call.answer()
-        return  # FSM остаётся в waiting_photo_weight → поймает handle_photo_weight
-
-    # Иначе — это конкретный вес
-    try:
-        weight_g = float(portion_data)
-    except ValueError:
-        await call.answer("Ошибка, попробуй снова")
-        return
-
-    await call.answer("⚙️ Считаю КБЖУ...")
-
-    try:
-        await call.message.edit_text(
-            call.message.text.replace(
-                "⚖️ <b>Выбери размер порции:</b>",
-                f"⚖️ Порция: <b>~{weight_g:.0f}г</b> (оценка)\n\n⏳ Считаю КБЖУ..."
-            ),
-            parse_mode="HTML",
-        )
-
-        profile = user_service.to_profile_dict(db_user)
-        response = await ai_service.calculate_nutrition_with_weight(
-            user_id=call.from_user.id,
-            weight_g=weight_g,
-            user_profile=profile,
-        )
-
-        fsm_data = await state.get_data()
-        photo_file_id = fsm_data.get("photo_file_id")
-
-        food_log = FoodLog(
-            user_id=db_user.id,
-            raw_input=f"[фото] порция: ~{weight_g:.0f}г",
-            is_photo=True,
-            photo_file_id=photo_file_id,
-            weight_g=weight_g,
-            weight_confirmed=False,
-            meal_date=local_today(db_user),
-        )
-        await save_nutrition_to_log(session, food_log, response)
-        await state.clear()
-
-        summary = await _build_day_summary(session, db_user, food_log)
-        await call.message.edit_text(summary, parse_mode="HTML")
-
-    except Exception as e:
-        logger.error(f"Portion calc error for user {db_user.id}: {e}")
-        await call.message.edit_text("😕 Ошибка при расчёте. Попробуй снова.")
-        await state.clear()
+        await state.set_state(NutritionFSM.waiting_food_text)
 
 
-# ─── Шаг 2: ручной ввод веса (fallback) ──────────────────────────────────────
-
-@router.message(NutritionFSM.waiting_photo_weight)
-async def handle_photo_weight(
-    message: Message,
-    db_user,
-    session: AsyncSession,
-    state: FSMContext,
-):
-    """
-    Шаг 2: пользователь ввёл вес порции → считаем КБЖУ.
-
-    ФИКС: Умный парсер — понимает:
-    - "240"
-    - "240г"
-    - Развёрнутый список типа:
-        "1. Куриная котлета - 100гр
-         2. Морская капуста - 80гр
-         Итого 240 гр"
-    """
-
-    weight_g = _extract_weight_from_text(message.text)
-
-    # Валидация диапазона
-    if weight_g is None or not (10 <= weight_g <= 5000):
-        await message.answer(
-            "⚖️ Не смог распознать вес порции.\n"
-            "Введи одно число в граммах, например: <code>240</code>",
-            parse_mode="HTML",
-        )
-        return
-
-    thinking_msg = await message.answer("⚙️ Считаю КБЖУ...")
-
-    try:
-        profile = user_service.to_profile_dict(db_user)
-        response = await ai_service.calculate_nutrition_with_weight(
-            user_id=message.from_user.id,
-            weight_g=weight_g,
-            user_profile=profile,
-        )
-
-        # Достаём file_id из состояния
-        fsm_data = await state.get_data()
-        photo_file_id = fsm_data.get("photo_file_id")
-
-        # Сохраняем лог с распарсенным КБЖУ
-        food_log = FoodLog(
-            user_id=db_user.id,
-            raw_input=f"[фото] вес: {weight_g:.0f}г",
-            is_photo=True,
-            photo_file_id=photo_file_id,
-            weight_g=weight_g,
-            weight_confirmed=True,
-            meal_date=local_today(db_user),
-        )
-        await save_nutrition_to_log(session, food_log, response)
-
-        await state.clear()
-        summary = await _build_day_summary(session, db_user, food_log)
-        await thinking_msg.edit_text(summary, parse_mode="HTML")
-
-    except Exception as e:
-        logger.error(f"Nutrition calc error: {e}")
-        await thinking_msg.edit_text("😕 Что-то пошло не так. Попробуй ещё раз.")
-        await state.clear()
-
-
-# ─── Текстовый ввод еды ──────────────────────────────────────────────────────
+# ─── Обработка текста ────────────────────────────────────────────────────────
 
 @router.message(NutritionFSM.waiting_food_text)
 async def handle_food_text(
@@ -368,46 +300,154 @@ async def handle_food_text(
     session: AsyncSession,
     state: FSMContext,
 ):
+    """Текст → AI (JSON) → fallback на базу → ошибка."""
+
     thinking_msg = await message.answer("🧠 Анализирую...")
 
-    try:
-        profile = user_service.to_profile_dict(db_user)
-        # Добавляем инструкцию к запросу
-        user_msg = (
-            f"Я съел: {message.text}\n\n"
-            f"Определи КБЖУ и выведи в таблице. "
-            f"Если что-то неоднозначно по весу — уточни или укажи диапазон."
-        )
-        response = await ai_service.chat(
-            user_id=message.from_user.id,
-            user_message=user_msg,
-            user_profile=profile,
+    saved = await _process_food(
+        session, db_user, thinking_msg,
+        raw_input=message.text,
+        text_input=message.text,
+    )
+
+    if saved:
+        await state.clear()
+    else:
+        await state.clear()
+        await thinking_msg.edit_text(
+            "😕 Не удалось распознать продукты. Попробуй написать проще:\n\n"
+            "<i>«куриная грудка 200г и рис 150г»</i>",
+            parse_mode="HTML",
         )
 
-        # Сохраняем факт записи с распарсенным КБЖУ
-        food_log = FoodLog(
-            user_id=db_user.id,
-            raw_input=message.text,
-            is_photo=False,
-            meal_date=local_today(db_user),
+
+# ─── Inline: подтверждение ───────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("food_ok:"))
+async def cb_food_ok(call: CallbackQuery):
+    await call.message.edit_reply_markup(reply_markup=None)
+    await call.answer("👍 Записано!")
+
+
+# ─── Inline: удаление ───────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("food_del:"))
+async def cb_food_del(call: CallbackQuery, db_user, session: AsyncSession):
+    try:
+        log_id = int(call.data.split(":")[1])
+        food_log = await session.get(FoodLog, log_id)
+
+        if food_log and food_log.user_id == db_user.id:
+            await session.delete(food_log)
+            await session.commit()
+            await call.message.edit_text(
+                "🗑 <i>Запись удалена из дневника.</i>",
+                parse_mode="HTML",
+            )
+        else:
+            await call.answer("Запись не найдена")
+    except Exception as e:
+        logger.error(f"Delete error: {e}")
+        await call.answer("Ошибка при удалении")
+
+
+# ─── Inline: коррекция веса ──────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("food_fix:"))
+async def cb_food_fix(call: CallbackQuery, state: FSMContext):
+    log_id = int(call.data.split(":")[1])
+    await state.update_data(fix_log_id=log_id)
+    await state.set_state(NutritionFSM.correcting_weight)
+
+    await call.message.edit_reply_markup(reply_markup=None)
+    await call.message.answer(
+        "⚖️ Введи общий вес порции в граммах:\n\n"
+        "Например: <code>240</code>",
+        parse_mode="HTML",
+    )
+    await call.answer()
+
+
+@router.message(NutritionFSM.correcting_weight)
+async def handle_weight_correction(
+    message: Message,
+    db_user,
+    session: AsyncSession,
+    state: FSMContext,
+):
+    """Пересчёт КБЖУ пропорционально новому весу. 0 вызовов AI."""
+
+    match = re.search(r'(\d+[.,]?\d*)', message.text.strip())
+    if not match:
+        await message.answer(
+            "⚖️ Введи число, например: <code>240</code>",
+            parse_mode="HTML",
         )
-        await save_nutrition_to_log(session, food_log, response)
+        return
+
+    new_weight = float(match.group(1).replace(",", "."))
+    if not (10 <= new_weight <= 5000):
+        await message.answer(
+            "⚖️ Вес должен быть от 10 до 5000 г.",
+            parse_mode="HTML",
+        )
+        return
+
+    fsm_data = await state.get_data()
+    log_id = fsm_data.get("fix_log_id")
+
+    if not log_id:
+        await state.clear()
+        await message.answer("Запись не найдена. Попробуй записать заново.")
+        return
+
+    try:
+        food_log = await session.get(FoodLog, log_id)
+
+        if not food_log or food_log.user_id != db_user.id:
+            await state.clear()
+            await message.answer("Запись не найдена.")
+            return
+
+        # Пропорциональный пересчёт
+        old_weight = food_log.weight_g or new_weight
+        if old_weight > 0 and old_weight != new_weight:
+            ratio = new_weight / old_weight
+            food_log.calories  = round((food_log.calories or 0) * ratio, 1)
+            food_log.protein_g = round((food_log.protein_g or 0) * ratio, 1)
+            food_log.fat_g     = round((food_log.fat_g or 0) * ratio, 1)
+            food_log.carbs_g   = round((food_log.carbs_g or 0) * ratio, 1)
+
+        food_log.weight_g = new_weight
+        food_log.weight_confirmed = True
+        await session.commit()
+        await session.refresh(food_log)
 
         await state.clear()
-        summary = await _build_day_summary(session, db_user, food_log)
-        await thinking_msg.edit_text(summary, parse_mode="HTML")
+        await message.answer(
+            f"✅ <b>Вес обновлён: {new_weight:.0f}г</b>\n\n"
+            f"📊 Пересчитанные КБЖУ:\n"
+            f"  ├ 🔥 Калории: <b>{food_log.calories:.0f} ккал</b>\n"
+            f"  ├ 🥩 Белки: <b>{food_log.protein_g:.1f}г</b>\n"
+            f"  ├ 🧈 Жиры: <b>{food_log.fat_g:.1f}г</b>\n"
+            f"  └ 🍞 Углеводы: <b>{food_log.carbs_g:.1f}г</b>",
+            parse_mode="HTML",
+            reply_markup=main_menu_kb(),
+        )
 
     except Exception as e:
-        logger.error(f"Food text error: {e}")
-        await thinking_msg.edit_text("😕 Ошибка. Попробуй снова.")
+        logger.error(f"Weight correction error: {e}", exc_info=True)
         await state.clear()
+        await message.answer("😕 Ошибка при обновлении. Попробуй ещё раз.")
 
 
 # ─── Дневник за сегодня ──────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "food:today")
 async def cb_food_today(call: CallbackQuery, db_user, session: AsyncSession):
-    stats = await user_service.get_today_nutrition(session, db_user.id, local_today(db_user))
+    stats = await user_service.get_today_nutrition(
+        session, db_user.id, local_today(db_user)
+    )
     tdee = db_user.tdee_kcal or 2000
 
     cal = stats["calories"]
