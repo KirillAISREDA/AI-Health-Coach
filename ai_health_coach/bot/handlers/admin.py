@@ -27,8 +27,7 @@ router = Router()
 # ── Фильтр: только admin ─────────────────────────────────────────────────────
 
 def is_admin(user_id: int) -> bool:
-    admin_ids = getattr(settings, "admin_ids", [])
-    return user_id in admin_ids
+    return user_id in settings.get_admin_ids()
 
 
 class BroadcastFSM(StatesGroup):

@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import PostgresDsn, RedisDsn, field_validator
+from pydantic import PostgresDsn, RedisDsn, field_validator, Field
 from typing import Optional, List
 
 
@@ -40,14 +40,12 @@ class Settings(BaseSettings):
     context_ttl: int = 86400  # 24 hours
 
     # Telegram IDs через запятую: ADMIN_IDS=123456789,987654321
-    admin_ids: list[int] = []
+    admin_ids: str = ""
 
-    @field_validator("admin_ids", mode="before")
-    @classmethod
-    def parse_admin_ids(cls, v):
-        if isinstance(v, str):
-            return [int(x.strip()) for x in v.split(",") if x.strip().isdigit()]
-        return v or []
+    def get_admin_ids(self) -> list[int]:
+        if not self.admin_ids:
+            return []
+        return [int(x.strip()) for x in self.admin_ids.split(",") if x.strip().isdigit()]
 
     @property
     def database_url(self) -> str:
